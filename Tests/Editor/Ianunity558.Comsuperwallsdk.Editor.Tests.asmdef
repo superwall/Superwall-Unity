@@ -1,0 +1,15 @@
+{
+    "name": "Superwall.Editor.Tests",
+    "rootNamespace": "Superwall.Editor.Tests",
+    "references": [
+        "Superwall.Editor",
+        "Superwall"
+    ],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": []
+}

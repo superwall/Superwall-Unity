@@ -1,0 +1,11 @@
+{
+    "name": "Superwall.Editor",
+    "rootNamespace": "Superwall.Editor",
+    "references": [
+      "Superwall"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": []
+}
