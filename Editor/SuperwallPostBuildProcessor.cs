@@ -11,9 +11,6 @@ namespace Superwall.Editor
 {
     public class SuperwallPostBuildProcessor : IPostprocessBuildWithReport
     {
-        private const string SuperwallAndroidDep = "implementation 'com.superwall.sdk:superwall-android:2.+'";
-        private const string BillingDep = "implementation 'com.android.billingclient:billing:8.0.0'";
-
         public int callbackOrder => 99;
 
         public void OnPostprocessBuild(BuildReport report)
@@ -22,45 +19,6 @@ namespace Superwall.Editor
             if (report.summary.platform == BuildTarget.iOS)
             {
                 PostProcessIOS(report.summary.outputPath);
-            }
-#endif
-        }
-
-        /// <summary>
-        /// Called before build to ensure Android gradle templates have the Superwall dependency.
-        /// </summary>
-        [InitializeOnLoadMethod]
-        private static void EnsureAndroidGradleDependency()
-        {
-#if UNITY_ANDROID
-            string gradleTemplatePath = Path.Combine(Application.dataPath, "Plugins", "Android", "mainTemplate.gradle");
-
-            if (File.Exists(gradleTemplatePath))
-            {
-                string content = File.ReadAllText(gradleTemplatePath);
-                bool modified = false;
-
-                if (!content.Contains("superwall-android"))
-                {
-                    int depsIndex = content.IndexOf("dependencies");
-                    if (depsIndex >= 0)
-                    {
-                        int braceIndex = content.IndexOf('{', depsIndex);
-                        if (braceIndex >= 0)
-                        {
-                            int insertIndex = content.IndexOf('\n', braceIndex) + 1;
-                            content = content.Insert(insertIndex,
-                                $"    {SuperwallAndroidDep}\n    {BillingDep}\n");
-                            modified = true;
-                        }
-                    }
-                }
-
-                if (modified)
-                {
-                    File.WriteAllText(gradleTemplatePath, content);
-                    Debug.Log("[Superwall] Added Superwall dependency to mainTemplate.gradle");
-                }
             }
 #endif
         }

@@ -1,0 +1,16 @@
+apply plugin: 'com.android.library'
+
+android {
+    namespace 'com.superwall.sdk.unity.deps'
+    compileSdkVersion **APIVERSION**
+
+    defaultConfig {
+        minSdkVersion **MINSDKVERSION**
+        targetSdkVersion **TARGETSDKVERSION**
+    }
+}
+
+dependencies {
+    api 'com.superwall.sdk:superwall-android:2.+'
+    api 'com.android.billingclient:billing:8.0.0'
+}
