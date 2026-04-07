@@ -25,7 +25,9 @@ import com.superwall.sdk.paywall.presentation.get_presentation_result.getPresent
 import com.superwall.sdk.paywall.presentation.result.PresentationResult
 import com.superwall.sdk.analytics.superwall.SuperwallEventInfo
 import java.net.URI
+import com.superwall.sdk.store.abstractions.product.StoreProduct
 import kotlinx.coroutines.*
+import kotlin.time.Duration.Companion.seconds
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
@@ -313,6 +315,107 @@ class SuperwallUnityBridge {
     fun respondToPurchaseController(callbackId: String, resultJson: String) {}
     fun respondToRestorePurchases(callbackId: String, resultJson: String) {}
 
+    fun purchase(productId: String, callbackId: String) {
+        scope.launch {
+            val result = Superwall.instance.purchase(productId)
+            result.fold(
+                onSuccess = { purchaseResult ->
+                    val data = JSONObject()
+                    when (purchaseResult) {
+                        is PurchaseResult.Purchased -> data.put("type", "purchased")
+                        is PurchaseResult.Cancelled -> data.put("type", "cancelled")
+                        is PurchaseResult.Pending -> data.put("type", "pending")
+                        is PurchaseResult.Failed -> {
+                            data.put("type", "failed")
+                            data.put("error", purchaseResult.errorMessage)
+                        }
+                    }
+                    sendAsyncResponse(callbackId, data)
+                },
+                onFailure = { error ->
+                    sendAsyncResponse(callbackId, JSONObject().apply {
+                        put("type", "failed")
+                        put("error", error.message ?: "Unknown error")
+                    })
+                }
+            )
+        }
+    }
+
+    fun getProducts(productIdsJson: String, callbackId: String) {
+        scope.launch {
+            try {
+                val arr = JSONArray(productIdsJson)
+                val ids = Array(arr.length()) { arr.getString(it) }
+                val result = Superwall.instance.getProducts(*ids)
+                result.fold(
+                    onSuccess = { productsMap ->
+                        val productsJson = JSONObject()
+                        productsMap.forEach { (id, product) ->
+                            productsJson.put(id, serializeStoreProduct(product))
+                        }
+                        sendAsyncResponse(callbackId, JSONObject().put("products", productsJson))
+                    },
+                    onFailure = { error ->
+                        sendAsyncResponse(callbackId, JSONObject().apply {
+                            put("error", error.message ?: "Unknown error")
+                        })
+                    }
+                )
+            } catch (e: JSONException) {
+                sendAsyncResponse(callbackId, JSONObject().put("error", "Invalid JSON: ${e.message}"))
+            }
+        }
+    }
+
+    fun getAssignments(callbackId: String) {
+        val assignments = Superwall.instance.getAssignments().getOrNull() ?: emptyList()
+        val arr = JSONArray()
+        assignments.forEach { a ->
+            arr.put(JSONObject().apply {
+                put("experimentId", a.experimentId)
+                put("variant", JSONObject().apply {
+                    put("id", a.variant.id)
+                    put("type", if (a.variant.type == Experiment.Variant.VariantType.TREATMENT) "treatment" else "holdout")
+                    put("paywallId", a.variant.paywallId)
+                })
+            })
+        }
+        sendAsyncResponse(callbackId, JSONObject().put("assignments", arr))
+    }
+
+    fun showAlert(paramsJson: String) {
+        try {
+            val json = JSONObject(paramsJson)
+            val title = json.optString("title", null)
+            val message = json.optString("message", null)
+            val actionTitle = json.optString("actionTitle", null)
+            val closeActionTitle = json.optString("closeActionTitle", "Done")
+            val actionCallbackId = json.optString("actionCallbackId", null)
+            val closeCallbackId = json.optString("closeCallbackId", null)
+
+            val action: (() -> Unit)? = actionCallbackId?.let {
+                { sendAsyncResponse(it, JSONObject().put("action", "performed")) }
+            }
+            val onClose: (() -> Unit)? = closeCallbackId?.let {
+                { sendAsyncResponse(it, JSONObject().put("action", "closed")) }
+            }
+
+            Superwall.instance.showAlert(
+                title = title,
+                message = message,
+                actionTitle = actionTitle,
+                closeActionTitle = closeActionTitle,
+                action = action,
+                onClose = onClose
+            )
+        } catch (_: JSONException) {}
+    }
+
+    fun refreshConfiguration() {
+        Superwall.instance.refreshConfiguration()
+    }
+
     // --- Serialization ---
 
     private fun serializePaywallInfo(info: PaywallInfo) = JSONObject().apply {
@@ -347,6 +450,37 @@ class SuperwallUnityBridge {
     private fun serializeCustomerInfo(info: CustomerInfo) = JSONObject().apply {
         put("userId", info.userId)
         put("entitlements", JSONArray().apply { info.entitlements.forEach { put(serializeEntitlement(it)) } })
+    }
+
+    private fun serializeStoreProduct(product: StoreProduct) = JSONObject().apply {
+        put("productIdentifier", product.productIdentifier)
+        put("fullIdentifier", product.fullIdentifier)
+        put("localizedPrice", product.localizedPrice)
+        put("localizedSubscriptionPeriod", product.localizedSubscriptionPeriod)
+        put("period", product.period)
+        put("periodly", product.periodly)
+        put("periodDays", product.periodDays)
+        put("periodWeeks", product.periodWeeks)
+        put("periodMonths", product.periodMonths)
+        put("periodYears", product.periodYears)
+        put("dailyPrice", product.dailyPrice)
+        put("weeklyPrice", product.weeklyPrice)
+        put("monthlyPrice", product.monthlyPrice)
+        put("yearlyPrice", product.yearlyPrice)
+        put("hasFreeTrial", product.hasFreeTrial)
+        put("trialPeriodDays", product.trialPeriodDays)
+        put("trialPeriodWeeks", product.trialPeriodWeeks)
+        put("trialPeriodMonths", product.trialPeriodMonths)
+        put("trialPeriodYears", product.trialPeriodYears)
+        put("trialPeriodText", product.trialPeriodText)
+        put("trialPeriodPrice", product.trialPeriodPrice.toString())
+        put("localizedTrialPeriodPrice", product.localizedTrialPeriodPrice)
+        put("currencyCode", product.currencyCode)
+        put("currencySymbol", product.currencySymbol)
+        put("locale", product.locale)
+        put("languageCode", product.languageCode)
+        put("price", product.price.toString())
+        put("productType", product.productType)
     }
 
     private fun serializePresentationResult(result: PresentationResult) = JSONObject().apply {
@@ -427,6 +561,8 @@ class SuperwallUnityBridge {
                         else -> com.superwall.sdk.config.options.PaywallOptions.TransactionBackgroundView.SPINNER
                     }
                 }
+                if (paywallsJson.has("useCachedTemplates")) paywalls.useCachedTemplates = paywallsJson.getBoolean("useCachedTemplates")
+                if (paywallsJson.has("timeoutAfter")) paywalls.timeoutAfter = paywallsJson.getDouble("timeoutAfter").seconds
                 if (paywallsJson.has("restoreFailed")) {
                     val restoreJson = paywallsJson.getJSONObject("restoreFailed")
                     if (restoreJson.has("title")) paywalls.restoreFailed.title = restoreJson.getString("title")

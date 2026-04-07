@@ -32,6 +32,8 @@ namespace Superwall
         public TransactionBackgroundView TransactionBackgroundView = TransactionBackgroundView.Spinner;
         public Dictionary<string, string> OverrideProductsByName;
         public bool ShouldShowWebPurchaseConfirmationAlert = false;
+        public bool UseCachedTemplates = false;
+        public float? TimeoutAfter = null;
     }
 
     [Serializable]

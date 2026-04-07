@@ -453,6 +453,150 @@ namespace Superwall
             }
         }
 
+        // ------- Purchase -------
+
+        public void Purchase(string productId, Action<PurchaseResult> completion)
+        {
+            string callbackId = Guid.NewGuid().ToString();
+            BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
+            {
+                PurchaseResult result = PurchaseResult.Cancelled();
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    if (dict != null && dict.ContainsKey("type"))
+                    {
+                        string type = dict["type"] as string;
+                        switch (type)
+                        {
+                            case "cancelled":
+                                result = PurchaseResult.Cancelled();
+                                break;
+                            case "purchased":
+                                result = PurchaseResult.Purchased();
+                                break;
+                            case "pending":
+                                result = PurchaseResult.Pending();
+                                break;
+                            case "failed":
+                                string error = dict.ContainsKey("error") ? dict["error"] as string : "";
+                                result = PurchaseResult.Failed(error ?? "");
+                                break;
+                        }
+                    }
+                }
+                completion?.Invoke(result);
+            });
+            CallNative_Purchase(productId, callbackId);
+        }
+
+        // ------- Products -------
+
+        public void GetProducts(List<string> productIds, Action<Dictionary<string, StoreProduct>> completion)
+        {
+            string callbackId = Guid.NewGuid().ToString();
+            BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
+            {
+                var result = new Dictionary<string, StoreProduct>();
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    if (dict != null && dict.ContainsKey("products"))
+                    {
+                        var products = dict["products"] as Dictionary<string, object>;
+                        if (products != null)
+                        {
+                            foreach (var kvp in products)
+                            {
+                                var productDict = kvp.Value as Dictionary<string, object>;
+                                if (productDict != null)
+                                {
+                                    result[kvp.Key] = DeserializeStoreProduct(productDict);
+                                }
+                            }
+                        }
+                    }
+                }
+                completion?.Invoke(result);
+            });
+            CallNative_GetProducts(Json.Serialize(productIds), callbackId);
+        }
+
+        // ------- Get Assignments -------
+
+        public void GetAssignments(Action<List<ConfirmedAssignment>> completion)
+        {
+            string callbackId = Guid.NewGuid().ToString();
+            BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
+            {
+                var assignments = new List<ConfirmedAssignment>();
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    if (dict != null && dict.ContainsKey("assignments"))
+                    {
+                        var list = dict["assignments"] as List<object>;
+                        if (list != null)
+                        {
+                            foreach (var item in list)
+                            {
+                                var aDict = item as Dictionary<string, object>;
+                                if (aDict == null) continue;
+                                var assignment = new ConfirmedAssignment();
+                                assignment.ExperimentId = aDict.ContainsKey("experimentId") ? aDict["experimentId"] as string : null;
+                                assignment.Variant = DeserializeVariant(aDict.ContainsKey("variant") ? aDict["variant"] as Dictionary<string, object> : null);
+                                assignments.Add(assignment);
+                            }
+                        }
+                    }
+                }
+                completion?.Invoke(assignments);
+            });
+            CallNative_GetAssignments(callbackId);
+        }
+
+        // ------- Show Alert -------
+
+        public void ShowAlert(string title = null, string message = null, string actionTitle = null, string closeActionTitle = "Done", Action onAction = null, Action onClose = null)
+        {
+            var data = new Dictionary<string, object>();
+            if (title != null) data["title"] = title;
+            if (message != null) data["message"] = message;
+            if (actionTitle != null) data["actionTitle"] = actionTitle;
+            data["closeActionTitle"] = closeActionTitle;
+
+            string onActionCallbackId = null;
+            if (onAction != null)
+            {
+                onActionCallbackId = Guid.NewGuid().ToString();
+                BridgeCallbackHandler.Instance.RegisterAsyncCallback(onActionCallbackId, (json) =>
+                {
+                    onAction();
+                });
+                data["onActionCallbackId"] = onActionCallbackId;
+            }
+
+            string onCloseCallbackId = null;
+            if (onClose != null)
+            {
+                onCloseCallbackId = Guid.NewGuid().ToString();
+                BridgeCallbackHandler.Instance.RegisterAsyncCallback(onCloseCallbackId, (json) =>
+                {
+                    onClose();
+                });
+                data["onCloseCallbackId"] = onCloseCallbackId;
+            }
+
+            CallNative_ShowAlert(Json.Serialize(data));
+        }
+
+        // ------- Refresh Configuration -------
+
+        public void RefreshConfiguration()
+        {
+            CallNative_RefreshConfiguration();
+        }
+
         // ------- Consume (Android) -------
 
         public void Consume(string purchaseToken, Action<string> completion = null)
@@ -544,6 +688,67 @@ namespace Superwall
             return exp;
         }
 
+        private static StoreProduct DeserializeStoreProduct(Dictionary<string, object> dict)
+        {
+            if (dict == null) return new StoreProduct();
+            var p = new StoreProduct();
+            p.ProductIdentifier = dict.ContainsKey("productIdentifier") ? dict["productIdentifier"] as string : null;
+            p.SubscriptionGroupIdentifier = dict.ContainsKey("subscriptionGroupIdentifier") ? dict["subscriptionGroupIdentifier"] as string : null;
+            p.LocalizedPrice = dict.ContainsKey("localizedPrice") ? dict["localizedPrice"] as string : null;
+            p.LocalizedSubscriptionPeriod = dict.ContainsKey("localizedSubscriptionPeriod") ? dict["localizedSubscriptionPeriod"] as string : null;
+            p.Period = dict.ContainsKey("period") ? dict["period"] as string : null;
+            p.Periodly = dict.ContainsKey("periodly") ? dict["periodly"] as string : null;
+            p.PeriodWeeks = dict.ContainsKey("periodWeeks") ? Convert.ToInt32(dict["periodWeeks"]) : 0;
+            p.PeriodWeeksString = dict.ContainsKey("periodWeeksString") ? dict["periodWeeksString"] as string : null;
+            p.PeriodMonths = dict.ContainsKey("periodMonths") ? Convert.ToInt32(dict["periodMonths"]) : 0;
+            p.PeriodMonthsString = dict.ContainsKey("periodMonthsString") ? dict["periodMonthsString"] as string : null;
+            p.PeriodYears = dict.ContainsKey("periodYears") ? Convert.ToInt32(dict["periodYears"]) : 0;
+            p.PeriodYearsString = dict.ContainsKey("periodYearsString") ? dict["periodYearsString"] as string : null;
+            p.PeriodDays = dict.ContainsKey("periodDays") ? Convert.ToInt32(dict["periodDays"]) : 0;
+            p.PeriodDaysString = dict.ContainsKey("periodDaysString") ? dict["periodDaysString"] as string : null;
+            p.DailyPrice = dict.ContainsKey("dailyPrice") ? dict["dailyPrice"] as string : null;
+            p.WeeklyPrice = dict.ContainsKey("weeklyPrice") ? dict["weeklyPrice"] as string : null;
+            p.MonthlyPrice = dict.ContainsKey("monthlyPrice") ? dict["monthlyPrice"] as string : null;
+            p.YearlyPrice = dict.ContainsKey("yearlyPrice") ? dict["yearlyPrice"] as string : null;
+            p.HasFreeTrial = dict.ContainsKey("hasFreeTrial") && dict["hasFreeTrial"] is bool hft && hft;
+            p.TrialPeriodEndDate = dict.ContainsKey("trialPeriodEndDate") ? dict["trialPeriodEndDate"] as string : null;
+            p.TrialPeriodEndDateString = dict.ContainsKey("trialPeriodEndDateString") ? dict["trialPeriodEndDateString"] as string : null;
+            p.LocalizedTrialPeriodPrice = dict.ContainsKey("localizedTrialPeriodPrice") ? dict["localizedTrialPeriodPrice"] as string : null;
+            p.TrialPeriodPrice = dict.ContainsKey("trialPeriodPrice") ? Convert.ToDouble(dict["trialPeriodPrice"]) : 0;
+            p.TrialPeriodDays = dict.ContainsKey("trialPeriodDays") ? Convert.ToInt32(dict["trialPeriodDays"]) : 0;
+            p.TrialPeriodDaysString = dict.ContainsKey("trialPeriodDaysString") ? dict["trialPeriodDaysString"] as string : null;
+            p.TrialPeriodWeeks = dict.ContainsKey("trialPeriodWeeks") ? Convert.ToInt32(dict["trialPeriodWeeks"]) : 0;
+            p.TrialPeriodWeeksString = dict.ContainsKey("trialPeriodWeeksString") ? dict["trialPeriodWeeksString"] as string : null;
+            p.TrialPeriodMonths = dict.ContainsKey("trialPeriodMonths") ? Convert.ToInt32(dict["trialPeriodMonths"]) : 0;
+            p.TrialPeriodMonthsString = dict.ContainsKey("trialPeriodMonthsString") ? dict["trialPeriodMonthsString"] as string : null;
+            p.TrialPeriodYears = dict.ContainsKey("trialPeriodYears") ? Convert.ToInt32(dict["trialPeriodYears"]) : 0;
+            p.TrialPeriodYearsString = dict.ContainsKey("trialPeriodYearsString") ? dict["trialPeriodYearsString"] as string : null;
+            p.TrialPeriodText = dict.ContainsKey("trialPeriodText") ? dict["trialPeriodText"] as string : null;
+            p.Locale = dict.ContainsKey("locale") ? dict["locale"] as string : null;
+            p.LanguageCode = dict.ContainsKey("languageCode") ? dict["languageCode"] as string : null;
+            p.CurrencySymbol = dict.ContainsKey("currencySymbol") ? dict["currencySymbol"] as string : null;
+            p.CurrencyCode = dict.ContainsKey("currencyCode") ? dict["currencyCode"] as string : null;
+            p.IsFamilyShareable = dict.ContainsKey("isFamilyShareable") && dict["isFamilyShareable"] is bool ifs && ifs;
+            p.RegionCode = dict.ContainsKey("regionCode") ? dict["regionCode"] as string : null;
+            p.Price = dict.ContainsKey("price") ? Convert.ToDouble(dict["price"]) : 0;
+
+            if (dict.ContainsKey("entitlements") && dict["entitlements"] is List<object> entList)
+            {
+                p.Entitlements = DeserializeEntitlementList(entList);
+            }
+
+            if (dict.ContainsKey("attributes") && dict["attributes"] is Dictionary<string, object> attrs)
+            {
+                p.Attributes = new Dictionary<string, string>();
+                foreach (var kvp in attrs)
+                {
+                    p.Attributes[kvp.Key] = kvp.Value?.ToString();
+                }
+            }
+
+            return p;
+        }
+
         private static PaywallInfo DeserializePaywallInfo(Dictionary<string, object> dict)
         {
             if (dict == null) return null;
@@ -593,6 +798,12 @@ namespace Superwall
                 if (options.Paywalls.OverrideProductsByName != null)
                 {
                     paywalls["overrideProductsByName"] = options.Paywalls.OverrideProductsByName;
+                }
+
+                paywalls["useCachedTemplates"] = options.Paywalls.UseCachedTemplates;
+                if (options.Paywalls.TimeoutAfter.HasValue)
+                {
+                    paywalls["timeoutAfter"] = options.Paywalls.TimeoutAfter.Value;
                 }
 
                 dict["paywalls"] = paywalls;
@@ -1049,6 +1260,61 @@ namespace Superwall
             SuperwallBridgeAndroid.Consume(purchaseToken, callbackId);
 #else
             Debug.Log($"[Superwall] Consume({purchaseToken})");
+#endif
+        }
+
+        private static void CallNative_Purchase(string productId, string callbackId)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_Purchase(productId, callbackId);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.Purchase(productId, callbackId);
+#else
+            Debug.Log($"[Superwall] Purchase({productId})");
+#endif
+        }
+
+        private static void CallNative_GetProducts(string productIdsJson, string callbackId)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_GetProducts(productIdsJson, callbackId);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.GetProducts(productIdsJson, callbackId);
+#else
+            Debug.Log($"[Superwall] GetProducts({productIdsJson})");
+#endif
+        }
+
+        private static void CallNative_GetAssignments(string callbackId)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_GetAssignments(callbackId);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.GetAssignments(callbackId);
+#else
+            Debug.Log("[Superwall] GetAssignments()");
+#endif
+        }
+
+        private static void CallNative_ShowAlert(string alertJson)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_ShowAlert(alertJson);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.ShowAlert(alertJson);
+#else
+            Debug.Log($"[Superwall] ShowAlert({alertJson})");
+#endif
+        }
+
+        private static void CallNative_RefreshConfiguration()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_RefreshConfiguration();
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.RefreshConfiguration();
+#else
+            Debug.Log("[Superwall] RefreshConfiguration()");
 #endif
         }
     }

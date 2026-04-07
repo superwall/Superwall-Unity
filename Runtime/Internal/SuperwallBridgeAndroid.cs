@@ -213,6 +213,31 @@ namespace Superwall.Internal
         {
             Bridge.Call("respondToRestorePurchases", callbackId, resultJson);
         }
+
+        internal static void Purchase(string productId, string callbackId)
+        {
+            Bridge.Call("purchase", productId, callbackId);
+        }
+
+        internal static void GetProducts(string productIdsJson, string callbackId)
+        {
+            Bridge.Call("getProducts", productIdsJson, callbackId);
+        }
+
+        internal static void GetAssignments(string callbackId)
+        {
+            Bridge.Call("getAssignments", callbackId);
+        }
+
+        internal static void ShowAlert(string alertJson)
+        {
+            Bridge.Call("showAlert", alertJson);
+        }
+
+        internal static void RefreshConfiguration()
+        {
+            Bridge.Call("refreshConfiguration");
+        }
     }
 #endif
 }

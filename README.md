@@ -227,6 +227,29 @@ if (status.Type == SubscriptionStatus.StatusType.Active)
 Superwall.Shared.SubscriptionStatus = SubscriptionStatus.CreateActive(entitlements);
 ```
 
+## Programmatic Purchases
+
+Purchase a product directly without showing a paywall:
+
+```csharp
+Superwall.Shared.Purchase("product_id", (result) =>
+{
+    Debug.Log($"Purchase result: {result.Type}"); // Purchased, Cancelled, Pending, Failed
+});
+```
+
+## Products
+
+Fetch product details by ID:
+
+```csharp
+Superwall.Shared.GetProducts(new List<string> { "monthly", "annual" }, (products) =>
+{
+    foreach (var kvp in products)
+        Debug.Log($"{kvp.Key}: {kvp.Value.LocalizedPrice}");
+});
+```
+
 ## Other APIs
 
 ```csharp
@@ -239,6 +262,12 @@ Superwall.Shared.HandleDeepLink("https://example.com/link");
 
 // Dismiss current paywall
 Superwall.Shared.Dismiss();
+
+// Show alert on current paywall
+Superwall.Shared.ShowAlert(title: "Hey!", message: "Check this out");
+
+// Force refresh config
+Superwall.Shared.RefreshConfiguration();
 
 // Check state
 bool presented = Superwall.Shared.IsPaywallPresented;
@@ -273,11 +302,16 @@ Superwall.Shared.LocaleIdentifier = "en_US";
 | `IsPaywallPresented` | Whether a paywall is showing |
 | `IsConfigured` | Whether SDK is configured |
 | `LogLevel` | Get/set log level |
+| `Purchase(productId, callback)` | Programmatic purchase |
+| `GetProducts(productIds, callback)` | Fetch product details |
 | `GetPresentationResult(placement, params?, callback)` | Check what would happen for a placement |
+| `GetAssignments(callback)` | Get experiment assignments |
 | `ConfirmAllAssignments(callback)` | Confirm all experiment assignments |
 | `RestorePurchases(callback)` | Restore purchases |
 | `GetCustomerInfo(callback)` | Get customer info |
 | `GetDeviceAttributes(callback)` | Get device attributes |
+| `ShowAlert(title?, message?, ...)` | Show alert on current paywall |
+| `RefreshConfiguration()` | Force config refresh |
 
 ## License
 

@@ -121,6 +121,21 @@ namespace Superwall.Internal
 
         [DllImport("__Internal")]
         internal static extern void _SuperwallBridge_RespondToRestorePurchases(string callbackId, string resultJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_Purchase(string productId, string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_GetProducts(string productIdsJson, string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_GetAssignments(string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_ShowAlert(string alertJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_RefreshConfiguration();
     }
 #endif
 }

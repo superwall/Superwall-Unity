@@ -882,6 +882,104 @@ public func _SuperwallBridge_SetOverrideProductsByName(_ productsJson: UnsafePoi
     }
 }
 
+@_cdecl("_SuperwallBridge_Purchase")
+public func _SuperwallBridge_Purchase(
+    _ productId: UnsafePointer<CChar>,
+    _ callbackId: UnsafePointer<CChar>
+) {
+    let prodId = String(cString: productId)
+    let cbId = String(cString: callbackId)
+
+    Task {
+        let products = await Superwall.shared.products(for: Set([prodId]))
+        guard let product = products.first else {
+            sendAsyncResponse(callbackId: cbId, data: [
+                "type": "failed",
+                "error": "Product not found: \(prodId)"
+            ])
+            return
+        }
+        let result = await Superwall.shared.purchase(product)
+        switch result {
+        case .purchased:
+            sendAsyncResponse(callbackId: cbId, data: ["type": "purchased"])
+        case .cancelled:
+            sendAsyncResponse(callbackId: cbId, data: ["type": "cancelled"])
+        case .pending:
+            sendAsyncResponse(callbackId: cbId, data: ["type": "pending"])
+        case .failed(let error):
+            sendAsyncResponse(callbackId: cbId, data: [
+                "type": "failed",
+                "error": error.localizedDescription
+            ])
+        @unknown default:
+            sendAsyncResponse(callbackId: cbId, data: ["type": "failed", "error": "unknown"])
+        }
+    }
+}
+
+@_cdecl("_SuperwallBridge_GetProducts")
+public func _SuperwallBridge_GetProducts(
+    _ productIdsJson: UnsafePointer<CChar>,
+    _ callbackId: UnsafePointer<CChar>
+) {
+    let json = String(cString: productIdsJson)
+    let cbId = String(cString: callbackId)
+
+    guard let productIds = parseJsonArray(json) as? [String] else {
+        sendAsyncResponse(callbackId: cbId, data: ["products": []])
+        return
+    }
+
+    Task {
+        let products = await Superwall.shared.products(for: Set(productIds))
+        let serialized: [[String: Any]] = products.map { product in
+            var dict: [String: Any] = [
+                "productIdentifier": product.productIdentifier,
+                "localizedPrice": product.localizedPrice,
+                "price": "\(product.price)",
+                "currencyCode": product.currencyCode ?? "",
+                "currencySymbol": product.currencySymbol ?? ""
+            ]
+            if let period = product.subscriptionPeriod {
+                dict["subscriptionPeriodUnit"] = "\(period.unit)"
+                dict["subscriptionPeriodValue"] = period.value
+            }
+            if let groupId = product.subscriptionGroupIdentifier {
+                dict["subscriptionGroupIdentifier"] = groupId
+            }
+            dict["hasFreeTrial"] = product.hasFreeTrial
+            dict["localizedSubscriptionPeriod"] = product.localizedSubscriptionPeriod
+            return dict
+        }
+        sendAsyncResponse(callbackId: cbId, data: ["products": serialized])
+    }
+}
+
+@_cdecl("_SuperwallBridge_GetAssignments")
+public func _SuperwallBridge_GetAssignments(_ callbackId: UnsafePointer<CChar>) {
+    let cbId = String(cString: callbackId)
+    let assignments = Superwall.shared.getAssignments()
+    let serialized = assignments.map { assignment -> [String: Any] in
+        return [
+            "experimentId": assignment.experimentId,
+            "variant": [
+                "id": assignment.variant.id,
+                "type": assignment.variant.type == .treatment ? "treatment" : "holdout",
+                "paywallId": assignment.variant.paywallId as Any
+            ] as [String: Any]
+        ]
+    }
+    sendAsyncResponse(callbackId: cbId, data: ["assignments": serialized])
+}
+
+@_cdecl("_SuperwallBridge_RefreshConfiguration")
+public func _SuperwallBridge_RefreshConfiguration() {
+    Task {
+        await Superwall.shared.refreshConfiguration()
+    }
+}
+
 @_cdecl("_SuperwallBridge_Consume")
 public func _SuperwallBridge_Consume(_ purchaseToken: UnsafePointer<CChar>, _ callbackId: UnsafePointer<CChar>) {
     // iOS does not use consume — this is Android-only

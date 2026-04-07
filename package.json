@@ -1,7 +1,7 @@
 {
 	"name": "com.superwall.sdk",
 	"displayName": "Superwall SDK",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"unity": "6000.4",
 	"unityRelease": "0f1",
 	"description": "Superwall SDK for Unity. Remotely configure paywalls, run paywall A/B tests, and more — all without shipping an app update.",
