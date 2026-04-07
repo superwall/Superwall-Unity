@@ -1,6 +1,18 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [0.2.1]
+
+## Enhancements
+
+### New APIs
+* `SetLocalResources(Dictionary<string, string>)` — map asset names to local file paths for paywall WebViews (Android only)
+
+### Delegate Fixes
+* Android: added `willRedeemLink`, `didRedeemLink`, `userAttributesDidChange` delegate callbacks
+* iOS: added `handleSuperwallDeepLink`, `userAttributesDidChange` delegate callbacks
+* iOS: added `ShowAlert` no-op stub to prevent missing symbol crash
+
 ## [0.2.0]
 
 ### Android Support

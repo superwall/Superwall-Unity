@@ -276,6 +276,24 @@ private class SuperwallUnityDelegate: SuperwallDelegate {
             "to": serializeCustomerInfo(newValue)
         ])
     }
+
+    func handleSuperwallDeepLink(
+        _ fullURL: URL,
+        pathComponents: [String],
+        queryParameters: [String: String]
+    ) {
+        sendToUnity(method: "handleSuperwallDeepLink", data: [
+            "fullURL": fullURL.absoluteString,
+            "pathComponents": pathComponents,
+            "queryParameters": queryParameters
+        ])
+    }
+
+    func userAttributesDidChange(newAttributes: [String: Any]) {
+        sendToUnity(method: "userAttributesDidChange", data: [
+            "newAttributes": newAttributes
+        ])
+    }
 }
 
 // MARK: - Unity Purchase Controller
@@ -1030,4 +1048,15 @@ public func _SuperwallBridge_RespondToRestorePurchases(_ callbackId: UnsafePoint
     }
 
     unityPurchaseController?.respondToRestore(callbackId: cbId, result: result)
+}
+
+@_cdecl("_SuperwallBridge_ShowAlert")
+public func _SuperwallBridge_ShowAlert(
+    _ titlePtr: UnsafePointer<CChar>?,
+    _ messagePtr: UnsafePointer<CChar>?,
+    _ actionTitlePtr: UnsafePointer<CChar>?
+) {
+    // No-op on iOS — SuperwallKit does not expose a showAlert API.
+    // This stub exists to prevent a crash from the missing DllImport symbol.
+    NSLog("[SuperwallUnityBridge] ShowAlert called (no-op on iOS)")
 }

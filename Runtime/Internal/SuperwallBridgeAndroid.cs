@@ -238,6 +238,11 @@ namespace Superwall.Internal
         {
             Bridge.Call("refreshConfiguration");
         }
+
+        internal static void SetLocalResources(string resourcesJson)
+        {
+            Bridge.Call("setLocalResources", resourcesJson);
+        }
     }
 #endif
 }

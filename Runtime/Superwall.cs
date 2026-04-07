@@ -453,6 +453,19 @@ namespace Superwall
             }
         }
 
+        // ------- Local Resources -------
+
+        /// <summary>
+        /// Map asset names to local file paths for paywall WebViews (served via swlocal:// URLs).
+        /// Keys are asset names used in the paywall template, values are absolute file paths.
+        /// Android only — no-op on iOS.
+        /// </summary>
+        public void SetLocalResources(Dictionary<string, string> resources)
+        {
+            string json = resources != null ? Json.Serialize(resources) : null;
+            CallNative_SetLocalResources(json);
+        }
+
         // ------- Purchase -------
 
         public void Purchase(string productId, Action<PurchaseResult> completion)
@@ -1315,6 +1328,17 @@ namespace Superwall
             SuperwallBridgeAndroid.RefreshConfiguration();
 #else
             Debug.Log("[Superwall] RefreshConfiguration()");
+#endif
+        }
+
+        private static void CallNative_SetLocalResources(string resourcesJson)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            // Not supported on iOS
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.SetLocalResources(resourcesJson);
+#else
+            Debug.Log($"[Superwall] SetLocalResources({resourcesJson})");
 #endif
         }
     }

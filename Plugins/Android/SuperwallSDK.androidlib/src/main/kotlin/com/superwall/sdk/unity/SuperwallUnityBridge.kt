@@ -25,6 +25,7 @@ import com.superwall.sdk.paywall.presentation.get_presentation_result.getPresent
 import com.superwall.sdk.paywall.presentation.result.PresentationResult
 import com.superwall.sdk.analytics.superwall.SuperwallEventInfo
 import java.net.URI
+import com.superwall.sdk.models.internal.RedemptionResult
 import com.superwall.sdk.store.abstractions.product.StoreProduct
 import kotlinx.coroutines.*
 import kotlin.time.Duration.Companion.seconds
@@ -416,6 +417,22 @@ class SuperwallUnityBridge {
         Superwall.instance.refreshConfiguration()
     }
 
+    fun setLocalResources(resourcesJson: String?) {
+        if (resourcesJson == null) {
+            Superwall.instance.localResources = emptyMap()
+            return
+        }
+        try {
+            val json = JSONObject(resourcesJson)
+            val map = mutableMapOf<String, com.superwall.sdk.paywall.view.webview.PaywallResource>()
+            json.keys().forEach { key ->
+                val path = json.getString(key)
+                map[key] = com.superwall.sdk.paywall.view.webview.PaywallResource.FromUri(android.net.Uri.parse(path))
+            }
+            Superwall.instance.localResources = map
+        } catch (_: JSONException) {}
+    }
+
     // --- Serialization ---
 
     private fun serializePaywallInfo(info: PaywallInfo) = JSONObject().apply {
@@ -622,6 +639,33 @@ class SuperwallUnityBridge {
             sendToUnity("handleLog", JSONObject().apply {
                 put("level", level); put("scope", scope)
                 put("message", message); put("error", error?.message)
+            })
+        }
+
+        override fun willRedeemLink() {
+            sendToUnity("willRedeemLink", JSONObject())
+        }
+
+        override fun didRedeemLink(result: RedemptionResult) {
+            sendToUnity("didRedeemLink", JSONObject().apply {
+                put("result", JSONObject().apply {
+                    when (result) {
+                        is RedemptionResult.Success -> put("status", "success")
+                        is RedemptionResult.Error -> {
+                            put("status", "error")
+                            put("error", result.error.message ?: "")
+                        }
+                        is RedemptionResult.Expired -> put("status", "expired")
+                        is RedemptionResult.InvalidCode -> put("status", "invalidCode")
+                        is RedemptionResult.ExpiredSubscription -> put("status", "expiredSubscription")
+                    }
+                })
+            })
+        }
+
+        override fun userAttributesDidChange(newAttributes: Map<String, Any>) {
+            sendToUnity("userAttributesDidChange", JSONObject().apply {
+                put("attributes", JSONObject(newAttributes))
             })
         }
 
