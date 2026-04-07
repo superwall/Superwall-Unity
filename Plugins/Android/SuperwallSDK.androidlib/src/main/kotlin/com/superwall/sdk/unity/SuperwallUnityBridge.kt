@@ -1,23 +1,30 @@
 package com.superwall.sdk.unity
 
 import android.app.Activity
+import android.net.Uri
 import com.unity3d.player.UnityPlayer
 import com.superwall.sdk.Superwall
 import com.superwall.sdk.config.options.SuperwallOptions
 import com.superwall.sdk.delegate.SuperwallDelegate
-import com.superwall.sdk.delegate.SubscriptionStatus
 import com.superwall.sdk.delegate.PurchaseResult
 import com.superwall.sdk.delegate.RestorationResult
 import com.superwall.sdk.identity.IdentityOptions
+import com.superwall.sdk.identity.identify
+import com.superwall.sdk.identity.setUserAttributes
 import com.superwall.sdk.logger.LogLevel
 import com.superwall.sdk.logger.LogScope
 import com.superwall.sdk.models.entitlements.Entitlement
+import com.superwall.sdk.models.entitlements.SubscriptionStatus
 import com.superwall.sdk.models.triggers.Experiment
 import com.superwall.sdk.models.customer.CustomerInfo
 import com.superwall.sdk.paywall.presentation.PaywallInfo
 import com.superwall.sdk.paywall.presentation.PaywallPresentationHandler
+import com.superwall.sdk.paywall.presentation.register
+import com.superwall.sdk.paywall.presentation.dismissSync
+import com.superwall.sdk.paywall.presentation.get_presentation_result.getPresentationResult
 import com.superwall.sdk.paywall.presentation.result.PresentationResult
 import com.superwall.sdk.analytics.superwall.SuperwallEventInfo
+import java.net.URI
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONException
@@ -47,13 +54,25 @@ class SuperwallUnityBridge {
                 sendToUnity("asyncResponse", data)
             } catch (_: Exception) {}
         }
+
+        fun serializeSubscriptionStatus(status: SubscriptionStatus) = JSONObject().apply {
+            when (status) {
+                is SubscriptionStatus.Active -> put("type", "active")
+                is SubscriptionStatus.Inactive -> put("type", "inactive")
+                is SubscriptionStatus.Unknown -> put("type", "unknown")
+            }
+        }
     }
 
     fun configure(apiKey: String, optionsJson: String?, hasPurchaseController: Boolean, completionCallbackId: String?) {
         val activity = UnityPlayer.currentActivity ?: return
         val options = if (optionsJson != null) parseOptions(optionsJson) else null
 
-        Superwall.configure(activity.application, apiKey, options = options) {
+        val unityActivityProvider = object : com.superwall.sdk.misc.ActivityProvider {
+            override fun getCurrentActivity(): Activity? = UnityPlayer.currentActivity
+        }
+
+        Superwall.configure(activity.application, apiKey, options = options, activityProvider = unityActivityProvider) {
             completionCallbackId?.let { cbId ->
                 sendAsyncResponse(cbId, JSONObject().put("success", true))
             }
@@ -103,7 +122,7 @@ class SuperwallUnityBridge {
 
     fun getDeviceAttributes(callbackId: String) {
         scope.launch {
-            val attrs = Superwall.instance.getDeviceAttributes()
+            val attrs = Superwall.instance.deviceAttributes()
             sendAsyncResponse(callbackId, JSONObject(attrs))
         }
     }
@@ -146,21 +165,26 @@ class SuperwallUnityBridge {
         }
     }
 
-    fun getSubscriptionStatus(): String = serializeSubscriptionStatus(Superwall.instance.subscriptionStatus).toString()
+    fun getSubscriptionStatus(): String = serializeSubscriptionStatus(Superwall.instance.subscriptionStatus.value).toString()
 
     fun setSubscriptionStatus(statusJson: String) {
         try {
             val type = JSONObject(statusJson).optString("type", "unknown")
-            Superwall.instance.subscriptionStatus = when (type.lowercase()) {
-                "active" -> SubscriptionStatus.ACTIVE
-                "inactive" -> SubscriptionStatus.INACTIVE
-                else -> SubscriptionStatus.UNKNOWN
+            val status: SubscriptionStatus = when (type.lowercase()) {
+                "active" -> SubscriptionStatus.Active(emptySet())
+                "inactive" -> SubscriptionStatus.Inactive
+                else -> SubscriptionStatus.Unknown
             }
+            Superwall.instance.setSubscriptionStatus(status)
         } catch (_: JSONException) {}
     }
 
-    fun getConfigurationStatus(): String = Superwall.instance.configurationStatus.name.lowercase()
-    fun getIsConfigured(): Boolean = Superwall.instance.configurationStatus.name.lowercase() == "configured"
+    fun getConfigurationStatus(): String = when (Superwall.instance.configurationState) {
+        is com.superwall.sdk.config.models.ConfigurationStatus.Configured -> "configured"
+        is com.superwall.sdk.config.models.ConfigurationStatus.Failed -> "failed"
+        is com.superwall.sdk.config.models.ConfigurationStatus.Pending -> "pending"
+    }
+    fun getIsConfigured(): Boolean = Superwall.instance.configurationState is com.superwall.sdk.config.models.ConfigurationStatus.Configured
     fun getIsPaywallPresented(): Boolean = Superwall.instance.isPaywallPresented
 
     fun preloadAllPaywalls() { Superwall.instance.preloadAllPaywalls() }
@@ -175,7 +199,7 @@ class SuperwallUnityBridge {
     }
 
     fun handleDeepLink(url: String): Boolean {
-        return Superwall.instance.handleDeepLink(android.net.Uri.parse(url))
+        return Superwall.instance.handleDeepLink(Uri.parse(url)).getOrDefault(false)
     }
 
     fun togglePaywallSpinner(isHidden: Boolean) { Superwall.instance.togglePaywallSpinner(isHidden) }
@@ -218,7 +242,7 @@ class SuperwallUnityBridge {
             handler.onSkip { reason ->
                 sendToUnity("onSkip", JSONObject().apply {
                     put("handlerId", handlerId)
-                    put("reason", reason.description)
+                    put("reason", reason::class.simpleName ?: "unknown")
                 })
             }
         }
@@ -236,7 +260,7 @@ class SuperwallUnityBridge {
         callbackId?.let { sendAsyncResponse(it, JSONObject().put("success", true)) }
     }
 
-    fun dismiss() { Superwall.instance.dismiss() }
+    fun dismiss() { Superwall.instance.dismissSync() }
 
     fun getPresentationResult(placement: String, paramsJson: String?, callbackId: String) {
         val params = paramsJson?.let {
@@ -248,14 +272,16 @@ class SuperwallUnityBridge {
             } catch (_: JSONException) { null }
         }
         scope.launch {
-            val result = Superwall.instance.getPresentationResult(placement, params)
-            sendAsyncResponse(callbackId, serializePresentationResult(result))
+            val result = Superwall.instance.getPresentationResult(placement, params).getOrNull()
+            if (result != null) {
+                sendAsyncResponse(callbackId, serializePresentationResult(result))
+            }
         }
     }
 
     fun confirmAllAssignments(callbackId: String) {
         scope.launch {
-            val assignments = Superwall.instance.confirmAllAssignments()
+            val assignments = Superwall.instance.confirmAllAssignments().getOrNull() ?: emptyList()
             val arr = JSONArray()
             assignments.forEach { a ->
                 arr.put(JSONObject().apply {
@@ -318,14 +344,6 @@ class SuperwallUnityBridge {
         set.forEach { put(serializeEntitlement(it)) }
     }
 
-    private fun serializeSubscriptionStatus(status: SubscriptionStatus) = JSONObject().apply {
-        when (status) {
-            SubscriptionStatus.ACTIVE -> put("type", "active")
-            SubscriptionStatus.INACTIVE -> put("type", "inactive")
-            SubscriptionStatus.UNKNOWN -> put("type", "unknown")
-        }
-    }
-
     private fun serializeCustomerInfo(info: CustomerInfo) = JSONObject().apply {
         put("userId", info.userId)
         put("entitlements", JSONArray().apply { info.entitlements.forEach { put(serializeEntitlement(it)) } })
@@ -347,11 +365,73 @@ class SuperwallUnityBridge {
             if (json.has("localeIdentifier")) localeIdentifier = json.getString("localeIdentifier")
             if (json.has("isExternalDataCollectionEnabled")) isExternalDataCollectionEnabled = json.getBoolean("isExternalDataCollectionEnabled")
             if (json.has("isGameControllerEnabled")) isGameControllerEnabled = json.getBoolean("isGameControllerEnabled")
+            if (json.has("passIdentifiersToPlayStore")) passIdentifiersToPlayStore = json.getBoolean("passIdentifiersToPlayStore")
+            if (json.has("shouldObservePurchases")) shouldObservePurchases = json.getBoolean("shouldObservePurchases")
+            if (json.has("useMockReviews")) useMockReviews = json.getBoolean("useMockReviews")
+            if (json.has("testModeBehavior")) {
+                testModeBehavior = when (json.getString("testModeBehavior").lowercase()) {
+                    "always" -> com.superwall.sdk.store.testmode.TestModeBehavior.ALWAYS
+                    "never" -> com.superwall.sdk.store.testmode.TestModeBehavior.NEVER
+                    "whenenabledforuser" -> com.superwall.sdk.store.testmode.TestModeBehavior.WHEN_ENABLED_FOR_USER
+                    else -> com.superwall.sdk.store.testmode.TestModeBehavior.AUTOMATIC
+                }
+            }
             if (json.has("logging")) {
-                val logging = json.getJSONObject("logging")
-                if (logging.has("level")) this.logging.level = when (logging.getString("level").lowercase()) {
+                val loggingJson = json.getJSONObject("logging")
+                if (loggingJson.has("level")) this.logging.level = when (loggingJson.getString("level").lowercase()) {
                     "debug" -> LogLevel.debug; "info" -> LogLevel.info; "warn" -> LogLevel.warn
                     "error" -> LogLevel.error; "none" -> LogLevel.none; else -> LogLevel.warn
+                }
+                if (loggingJson.has("scopes")) {
+                    val scopesArray = loggingJson.getJSONArray("scopes")
+                    val scopeSet = java.util.EnumSet.noneOf(LogScope::class.java)
+                    for (i in 0 until scopesArray.length()) {
+                        val scope = when (scopesArray.getString(i).lowercase()) {
+                            "all" -> LogScope.all
+                            "paywallevents" -> LogScope.paywallEvents
+                            "paywallpresentation" -> LogScope.paywallPresentation
+                            "network" -> LogScope.network
+                            "productsmanager" -> LogScope.productsManager
+                            "superwallcore" -> LogScope.superwallCore
+                            "configmanager" -> LogScope.configManager
+                            "identitymanager" -> LogScope.identityManager
+                            "localizationmanager" -> LogScope.localizationManager
+                            "storekitmanager" -> LogScope.storeKitManager
+                            "bouncebutton" -> LogScope.bounceButton
+                            "device" -> LogScope.device
+                            else -> null
+                        }
+                        if (scope != null) scopeSet.add(scope)
+                    }
+                    if (scopeSet.isNotEmpty()) this.logging.scopes = scopeSet
+                }
+            }
+            if (json.has("networkEnvironment")) {
+                networkEnvironment = when (json.getString("networkEnvironment").lowercase()) {
+                    "release" -> SuperwallOptions.NetworkEnvironment.Release()
+                    "releasecandidate" -> SuperwallOptions.NetworkEnvironment.ReleaseCandidate()
+                    "developer" -> SuperwallOptions.NetworkEnvironment.Developer()
+                    else -> SuperwallOptions.NetworkEnvironment.Release()
+                }
+            }
+            if (json.has("paywalls")) {
+                val paywallsJson = json.getJSONObject("paywalls")
+                if (paywallsJson.has("isHapticFeedbackEnabled")) paywalls.isHapticFeedbackEnabled = paywallsJson.getBoolean("isHapticFeedbackEnabled")
+                if (paywallsJson.has("shouldShowPurchaseFailureAlert")) paywalls.shouldShowPurchaseFailureAlert = paywallsJson.getBoolean("shouldShowPurchaseFailureAlert")
+                if (paywallsJson.has("shouldPreload")) paywalls.shouldPreload = paywallsJson.getBoolean("shouldPreload")
+                if (paywallsJson.has("automaticallyDismiss")) paywalls.automaticallyDismiss = paywallsJson.getBoolean("automaticallyDismiss")
+                if (paywallsJson.has("transactionBackgroundView")) {
+                    paywalls.transactionBackgroundView = when (paywallsJson.getString("transactionBackgroundView").lowercase()) {
+                        "spinner" -> com.superwall.sdk.config.options.PaywallOptions.TransactionBackgroundView.SPINNER
+                        "none" -> null
+                        else -> com.superwall.sdk.config.options.PaywallOptions.TransactionBackgroundView.SPINNER
+                    }
+                }
+                if (paywallsJson.has("restoreFailed")) {
+                    val restoreJson = paywallsJson.getJSONObject("restoreFailed")
+                    if (restoreJson.has("title")) paywalls.restoreFailed.title = restoreJson.getString("title")
+                    if (restoreJson.has("message")) paywalls.restoreFailed.message = restoreJson.getString("message")
+                    if (restoreJson.has("closeButtonTitle")) paywalls.restoreFailed.closeButtonTitle = restoreJson.getString("closeButtonTitle")
                 }
             }
         }
@@ -362,8 +442,8 @@ class SuperwallUnityBridge {
     private class SuperwallUnityDelegateImpl : SuperwallDelegate {
         override fun subscriptionStatusDidChange(from: SubscriptionStatus, to: SubscriptionStatus) {
             sendToUnity("subscriptionStatusDidChange", JSONObject().apply {
-                put("from", JSONObject().put("type", from.name.lowercase()))
-                put("to", JSONObject().put("type", to.name.lowercase()))
+                put("from", serializeSubscriptionStatus(from))
+                put("to", serializeSubscriptionStatus(to))
             })
         }
 
@@ -394,11 +474,11 @@ class SuperwallUnityBridge {
             sendToUnity("didPresentPaywall", JSONObject().put("identifier", withInfo.identifier))
         }
 
-        override fun paywallWillOpenURL(url: java.net.URL) {
+        override fun paywallWillOpenURL(url: URI) {
             sendToUnity("paywallWillOpenURL", JSONObject().put("url", url.toString()))
         }
 
-        override fun paywallWillOpenDeepLink(url: java.net.URL) {
+        override fun paywallWillOpenDeepLink(url: Uri) {
             sendToUnity("paywallWillOpenDeepLink", JSONObject().put("url", url.toString()))
         }
 

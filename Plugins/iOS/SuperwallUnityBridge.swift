@@ -37,6 +37,74 @@ private func parseJsonArray(_ jsonStr: String?) -> [Any]? {
     return obj
 }
 
+private func parseLogScope(_ str: String) -> LogScope? {
+    switch str.lowercased() {
+    case "localizationmanager": return .localizationManager
+    case "analytics": return .analytics
+    case "bouncebutton": return .bounceButton
+    case "coredata": return .coreData
+    case "configmanager": return .configManager
+    case "identitymanager": return .identityManager
+    case "debugmanager": return .debugManager
+    case "debugviewcontroller": return .debugViewController
+    case "localizationviewcontroller": return .localizationViewController
+    case "gamecontrollermanager": return .gameControllerManager
+    case "device": return .device
+    case "network": return .network
+    case "paywallevents": return .paywallEvents
+    case "productsmanager": return .productsManager
+    case "storekitmanager": return .storeKitManager
+    case "placements": return .placements
+    case "receipts": return .receipts
+    case "superwallcore": return .superwallCore
+    case "paywallpresentation": return .paywallPresentation
+    case "transactions": return .transactions
+    case "paywallviewcontroller": return .paywallViewController
+    case "cache": return .cache
+    case "webentitlements": return .webEntitlements
+    case "all": return .all
+    default: return nil
+    }
+}
+
+private func parseIntegrationAttribute(_ str: String) -> IntegrationAttribute? {
+    switch str {
+    case "adjustId": return .adjustId
+    case "amplitudeDeviceId": return .amplitudeDeviceId
+    case "amplitudeUserId": return .amplitudeUserId
+    case "appsflyerId": return .appsflyerId
+    case "brazeAliasName": return .brazeAliasName
+    case "brazeAliasLabel": return .brazeAliasLabel
+    case "onesignalId": return .onesignalId
+    case "fbAnonId": return .fbAnonId
+    case "firebaseAppInstanceId": return .firebaseAppInstanceId
+    case "firebaseInstallationId": return .firebaseInstallationId
+    case "iterableUserId": return .iterableUserId
+    case "iterableCampaignId": return .iterableCampaignId
+    case "iterableTemplateId": return .iterableTemplateId
+    case "mixpanelDistinctId": return .mixpanelDistinctId
+    case "mparticleId": return .mparticleId
+    case "clevertapId": return .clevertapId
+    case "airshipChannelId": return .airshipChannelId
+    case "kochavaDeviceId": return .kochavaDeviceId
+    case "tenjinId": return .tenjinId
+    case "posthogUserId": return .posthogUserId
+    case "customerioId": return .customerioId
+    case "appstackId": return .appstackId
+    default: return nil
+    }
+}
+
+private func parseEntitlementsFromJson(_ array: [[String: Any]]) -> Set<Entitlement> {
+    var entitlements = Set<Entitlement>()
+    for item in array {
+        if let id = item["id"] as? String {
+            entitlements.insert(Entitlement(id: id))
+        }
+    }
+    return entitlements
+}
+
 private func sendToUnity(method: String, data: [String: Any]) {
     let payload: [String: Any] = ["method": method, "data": data]
     guard let json = toJsonString(payload) else { return }
@@ -210,9 +278,61 @@ private class SuperwallUnityDelegate: SuperwallDelegate {
     }
 }
 
+// MARK: - Unity Purchase Controller
+
+private class UnityPurchaseController: PurchaseController {
+    private var pendingPurchaseContinuations: [String: CheckedContinuation<PurchaseResult, Never>] = [:]
+    private var pendingRestoreContinuations: [String: CheckedContinuation<RestorationResult, Never>] = [:]
+    private let lock = NSLock()
+
+    @MainActor
+    func purchase(product: StoreProduct) async -> PurchaseResult {
+        let callbackId = UUID().uuidString
+        return await withCheckedContinuation { continuation in
+            lock.lock()
+            pendingPurchaseContinuations[callbackId] = continuation
+            lock.unlock()
+
+            sendToUnity(method: "purchaseFromAppStore", data: [
+                "productId": product.productIdentifier,
+                "callbackId": callbackId
+            ])
+        }
+    }
+
+    @MainActor
+    func restorePurchases() async -> RestorationResult {
+        let callbackId = UUID().uuidString
+        return await withCheckedContinuation { continuation in
+            lock.lock()
+            pendingRestoreContinuations[callbackId] = continuation
+            lock.unlock()
+
+            sendToUnity(method: "restorePurchases", data: [
+                "callbackId": callbackId
+            ])
+        }
+    }
+
+    func respondToPurchase(callbackId: String, result: PurchaseResult) {
+        lock.lock()
+        let continuation = pendingPurchaseContinuations.removeValue(forKey: callbackId)
+        lock.unlock()
+        continuation?.resume(returning: result)
+    }
+
+    func respondToRestore(callbackId: String, result: RestorationResult) {
+        lock.lock()
+        let continuation = pendingRestoreContinuations.removeValue(forKey: callbackId)
+        lock.unlock()
+        continuation?.resume(returning: result)
+    }
+}
+
 // MARK: - Stored State
 
 private var unityDelegate: SuperwallUnityDelegate?
+private var unityPurchaseController: UnityPurchaseController?
 private var pendingFeatureHandlers: [String: () -> Void] = [:]
 
 // MARK: - Extern C Functions
@@ -247,6 +367,25 @@ public func _SuperwallBridge_Configure(
         if let gameController = dict["isGameControllerEnabled"] as? Bool {
             options?.isGameControllerEnabled = gameController
         }
+        if let shouldObserve = dict["shouldObservePurchases"] as? Bool {
+            options?.shouldObservePurchases = shouldObserve
+        }
+        if let shouldBypass = dict["shouldBypassAppTransactionCheck"] as? Bool {
+            options?.shouldBypassAppTransactionCheck = shouldBypass
+        }
+        if let maxRetry = dict["maxConfigRetryCount"] as? Int {
+            options?.maxConfigRetryCount = maxRetry
+        }
+        // networkEnvironment
+        if let networkEnv = dict["networkEnvironment"] as? String {
+            switch networkEnv.lowercased() {
+            case "release": options?.networkEnvironment = .release
+            case "developer": options?.networkEnvironment = .developer
+            case "releasecandidate": options?.networkEnvironment = .releaseCandidate
+            default: break
+            }
+        }
+        // logging
         if let logging = dict["logging"] as? [String: Any] {
             if let level = logging["level"] as? String {
                 switch level.lowercased() {
@@ -258,7 +397,70 @@ public func _SuperwallBridge_Configure(
                 default: break
                 }
             }
+            if let scopes = logging["scopes"] as? [String] {
+                var logScopes: Set<LogScope> = []
+                for scope in scopes {
+                    if let mapped = parseLogScope(scope) {
+                        logScopes.insert(mapped)
+                    }
+                }
+                if !logScopes.isEmpty {
+                    options?.logging.scopes = logScopes
+                }
+            }
         }
+        // paywalls
+        if let paywalls = dict["paywalls"] as? [String: Any] {
+            if let haptic = paywalls["isHapticFeedbackEnabled"] as? Bool {
+                options?.paywalls.isHapticFeedbackEnabled = haptic
+            }
+            if let purchaseFailure = paywalls["shouldShowPurchaseFailureAlert"] as? Bool {
+                options?.paywalls.shouldShowPurchaseFailureAlert = purchaseFailure
+            }
+            if let preload = paywalls["shouldPreload"] as? Bool {
+                options?.paywalls.shouldPreload = preload
+            }
+            if let autoDismiss = paywalls["automaticallyDismiss"] as? Bool {
+                options?.paywalls.automaticallyDismiss = autoDismiss
+            }
+            if let webRestore = paywalls["shouldShowWebRestorationAlert"] as? Bool {
+                options?.paywalls.shouldShowWebRestorationAlert = webRestore
+            }
+            if let webPurchaseConfirm = paywalls["shouldShowWebPurchaseConfirmationAlert"] as? Bool {
+                options?.paywalls.shouldShowWebPurchaseConfirmationAlert = webPurchaseConfirm
+            }
+            if let bgView = paywalls["transactionBackgroundView"] as? String {
+                switch bgView.lowercased() {
+                case "spinner": options?.paywalls.transactionBackgroundView = .spinner
+                case "none": options?.paywalls.transactionBackgroundView = .none
+                default: break
+                }
+            }
+            if let restoreFailed = paywalls["restoreFailed"] as? [String: Any] {
+                if let title = restoreFailed["title"] as? String {
+                    options?.paywalls.restoreFailed.title = title
+                }
+                if let message = restoreFailed["message"] as? String {
+                    options?.paywalls.restoreFailed.message = message
+                }
+                if let closeButton = restoreFailed["closeButtonTitle"] as? String {
+                    options?.paywalls.restoreFailed.closeButtonTitle = closeButton
+                }
+            }
+            if let overrides = paywalls["overrideProductsByName"] as? [String: String] {
+                options?.paywalls.overrideProductsByName = overrides
+            }
+        }
+        // Note: passIdentifiersToPlayStore is Android-only, skipped on iOS.
+        // Note: useMockReviews is not available in SuperwallKit for iOS, skipped.
+    }
+
+    // Set up purchase controller if C# side has one
+    var purchaseController: PurchaseController? = nil
+    if hasPurchaseController {
+        let controller = UnityPurchaseController()
+        unityPurchaseController = controller
+        purchaseController = controller
     }
 
     let completion: (() -> Void)? = callbackId.map { cbId in
@@ -267,7 +469,7 @@ public func _SuperwallBridge_Configure(
         }
     }
 
-    _ = Superwall.configure(apiKey: key, options: options, completion: completion)
+    _ = Superwall.configure(apiKey: key, purchaseController: purchaseController, options: options, completion: completion)
 }
 
 @_cdecl("_SuperwallBridge_Reset")
@@ -329,12 +531,27 @@ public func _SuperwallBridge_GetUserAttributes() -> UnsafePointer<CChar>? {
 
 @_cdecl("_SuperwallBridge_SetIntegrationAttribute")
 public func _SuperwallBridge_SetIntegrationAttribute(_ attribute: UnsafePointer<CChar>, _ value: UnsafePointer<CChar>?) {
-    // TODO: Map string attribute name to IntegrationAttribute enum
+    let attrName = String(cString: attribute)
+    let attrValue = toSwiftString(value)
+    if let integrationAttr = parseIntegrationAttribute(attrName) {
+        Superwall.shared.setIntegrationAttribute(integrationAttr, attrValue)
+    }
 }
 
 @_cdecl("_SuperwallBridge_SetIntegrationAttributes")
 public func _SuperwallBridge_SetIntegrationAttributes(_ attributesJson: UnsafePointer<CChar>) {
-    // TODO: Map string attribute names to IntegrationAttribute enum
+    let json = String(cString: attributesJson)
+    if let dict = parseJson(json) {
+        var props: [IntegrationAttribute: String?] = [:]
+        for (key, value) in dict {
+            if let attr = parseIntegrationAttribute(key) {
+                props[attr] = value as? String
+            }
+        }
+        if !props.isEmpty {
+            Superwall.shared.setIntegrationAttributes(props)
+        }
+    }
 }
 
 @_cdecl("_SuperwallBridge_GetDeviceAttributes")
@@ -396,8 +613,13 @@ public func _SuperwallBridge_GetEntitlements() -> UnsafePointer<CChar>? {
 
 @_cdecl("_SuperwallBridge_GetEntitlementsByProductIds")
 public func _SuperwallBridge_GetEntitlementsByProductIds(_ productIdsJson: UnsafePointer<CChar>) -> UnsafePointer<CChar>? {
-    // TODO: Implement when API is available
-    return toCString("[]")
+    let json = String(cString: productIdsJson)
+    guard let productIds = parseJsonArray(json) as? [String] else {
+        return toCString("[]")
+    }
+    let entitlements = Superwall.shared.entitlements.byProductIds(Set(productIds))
+    let serialized = serializeEntitlements(entitlements)
+    return toCString(toJsonString(serialized))
 }
 
 @_cdecl("_SuperwallBridge_GetCustomerInfo")
@@ -421,8 +643,11 @@ public func _SuperwallBridge_SetSubscriptionStatus(_ statusJson: UnsafePointer<C
     if let dict = parseJson(json), let type = dict["type"] as? String {
         switch type.lowercased() {
         case "active":
-            // TODO: Parse entitlements from JSON
-            Superwall.shared.subscriptionStatus = .active(Set<Entitlement>())
+            var entitlements = Set<Entitlement>()
+            if let entitlementsArray = dict["entitlements"] as? [[String: Any]] {
+                entitlements = parseEntitlementsFromJson(entitlementsArray)
+            }
+            Superwall.shared.subscriptionStatus = .active(entitlements)
         case "inactive":
             Superwall.shared.subscriptionStatus = .inactive
         default:
@@ -638,13 +863,23 @@ public func _SuperwallBridge_RestorePurchases(_ callbackId: UnsafePointer<CChar>
 
 @_cdecl("_SuperwallBridge_GetOverrideProductsByName")
 public func _SuperwallBridge_GetOverrideProductsByName() -> UnsafePointer<CChar>? {
-    // TODO: Implement when API is available
-    return nil
+    guard let overrides = Superwall.shared.overrideProductsByName else { return nil }
+    return toCString(toJsonString(overrides))
 }
 
 @_cdecl("_SuperwallBridge_SetOverrideProductsByName")
 public func _SuperwallBridge_SetOverrideProductsByName(_ productsJson: UnsafePointer<CChar>?) {
-    // TODO: Implement when API is available
+    if let json = toSwiftString(productsJson), let dict = parseJson(json) {
+        var overrides: [String: String] = [:]
+        for (key, value) in dict {
+            if let strValue = value as? String {
+                overrides[key] = strValue
+            }
+        }
+        Superwall.shared.overrideProductsByName = overrides
+    } else {
+        Superwall.shared.overrideProductsByName = nil
+    }
 }
 
 @_cdecl("_SuperwallBridge_Consume")
@@ -656,10 +891,45 @@ public func _SuperwallBridge_Consume(_ purchaseToken: UnsafePointer<CChar>, _ ca
 
 @_cdecl("_SuperwallBridge_RespondToPurchaseController")
 public func _SuperwallBridge_RespondToPurchaseController(_ callbackId: UnsafePointer<CChar>, _ resultJson: UnsafePointer<CChar>) {
-    // TODO: Implement purchase controller flow
+    let cbId = String(cString: callbackId)
+    let json = String(cString: resultJson)
+    guard let dict = parseJson(json), let type = dict["type"] as? String else { return }
+
+    let result: PurchaseResult
+    switch type.lowercased() {
+    case "purchased":
+        result = .purchased
+    case "cancelled":
+        result = .cancelled
+    case "pending":
+        result = .pending
+    case "failed":
+        let errorMessage = dict["error"] as? String ?? "Unknown error"
+        result = .failed(NSError(domain: "com.superwall.unity", code: -1, userInfo: [NSLocalizedDescriptionKey: errorMessage]))
+    default:
+        result = .cancelled
+    }
+
+    unityPurchaseController?.respondToPurchase(callbackId: cbId, result: result)
 }
 
 @_cdecl("_SuperwallBridge_RespondToRestorePurchases")
 public func _SuperwallBridge_RespondToRestorePurchases(_ callbackId: UnsafePointer<CChar>, _ resultJson: UnsafePointer<CChar>) {
-    // TODO: Implement restore flow
+    let cbId = String(cString: callbackId)
+    let json = String(cString: resultJson)
+    guard let dict = parseJson(json), let type = dict["type"] as? String else { return }
+
+    let result: RestorationResult
+    switch type.lowercased() {
+    case "restored":
+        result = .restored
+    case "failed":
+        let errorMessage = dict["error"] as? String
+        let error: Error? = errorMessage.map { NSError(domain: "com.superwall.unity", code: -1, userInfo: [NSLocalizedDescriptionKey: $0]) }
+        result = .failed(error)
+    default:
+        result = .failed(nil)
+    }
+
+    unityPurchaseController?.respondToRestore(callbackId: cbId, result: result)
 }

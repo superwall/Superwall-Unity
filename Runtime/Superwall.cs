@@ -170,16 +170,24 @@ namespace Superwall
             get
             {
                 string json = CallNative_GetEntitlements();
-                // TODO: Deserialize JSON into Entitlements object
-                return new Entitlements();
+                if (string.IsNullOrEmpty(json)) return new Entitlements();
+                var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                if (dict == null) return new Entitlements();
+                var result = new Entitlements();
+                result.Active = DeserializeEntitlementList(dict.ContainsKey("active") ? dict["active"] as List<object> : null);
+                result.Inactive = DeserializeEntitlementList(dict.ContainsKey("inactive") ? dict["inactive"] as List<object> : null);
+                result.All = DeserializeEntitlementList(dict.ContainsKey("all") ? dict["all"] as List<object> : null);
+                result.Web = DeserializeEntitlementList(dict.ContainsKey("web") ? dict["web"] as List<object> : null);
+                return result;
             }
         }
 
         public List<Entitlement> GetEntitlementsByProductIds(List<string> productIds)
         {
             string json = CallNative_GetEntitlementsByProductIds(Json.Serialize(productIds));
-            // TODO: Deserialize JSON into List<Entitlement>
-            return new List<Entitlement>();
+            if (string.IsNullOrEmpty(json)) return new List<Entitlement>();
+            var list = Json.Deserialize(json) as List<object>;
+            return DeserializeEntitlementList(list);
         }
 
         // ------- Customer Info -------
@@ -189,8 +197,17 @@ namespace Superwall
             string callbackId = Guid.NewGuid().ToString();
             BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
             {
-                // TODO: Deserialize JSON into CustomerInfo
-                completion(new CustomerInfo());
+                var info = new CustomerInfo();
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    if (dict != null)
+                    {
+                        info.UserId = dict.ContainsKey("userId") ? dict["userId"] as string : null;
+                        info.Entitlements = DeserializeEntitlementList(dict.ContainsKey("entitlements") ? dict["entitlements"] as List<object> : null);
+                    }
+                }
+                completion(info);
             });
             CallNative_GetCustomerInfo(callbackId);
         }
@@ -202,7 +219,19 @@ namespace Superwall
             get
             {
                 string json = CallNative_GetSubscriptionStatus();
-                // TODO: Deserialize JSON into SubscriptionStatus
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    if (dict != null && dict.ContainsKey("type"))
+                    {
+                        string type = dict["type"] as string;
+                        switch (type)
+                        {
+                            case "active": return SubscriptionStatus.CreateActive(new System.Collections.Generic.List<Entitlement>());
+                            case "inactive": return SubscriptionStatus.CreateInactive();
+                        }
+                    }
+                }
                 return SubscriptionStatus.CreateUnknown();
             }
             set
@@ -263,8 +292,9 @@ namespace Superwall
             {
                 string json = CallNative_GetLatestPaywallInfo();
                 if (string.IsNullOrEmpty(json)) return null;
-                // TODO: Deserialize JSON into PaywallInfo
-                return null;
+                var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                if (dict == null) return null;
+                return DeserializePaywallInfo(dict);
             }
         }
 
@@ -308,8 +338,34 @@ namespace Superwall
             string callbackId = Guid.NewGuid().ToString();
             BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
             {
-                // TODO: Deserialize JSON into PresentationResult
-                completion?.Invoke(PresentationResult.PlacementNotFound());
+                PresentationResult result = PresentationResult.PlacementNotFound();
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    if (dict != null && dict.ContainsKey("type"))
+                    {
+                        string type = dict["type"] as string;
+                        switch (type)
+                        {
+                            case "placementNotFound":
+                                result = PresentationResult.PlacementNotFound();
+                                break;
+                            case "noAudienceMatch":
+                                result = PresentationResult.NoAudienceMatch();
+                                break;
+                            case "paywall":
+                                result = PresentationResult.Paywall(DeserializeExperiment(dict.ContainsKey("experiment") ? dict["experiment"] as Dictionary<string, object> : null));
+                                break;
+                            case "holdout":
+                                result = PresentationResult.Holdout(DeserializeExperiment(dict.ContainsKey("experiment") ? dict["experiment"] as Dictionary<string, object> : null));
+                                break;
+                            case "paywallNotAvailable":
+                                result = PresentationResult.PaywallNotAvailable();
+                                break;
+                        }
+                    }
+                }
+                completion?.Invoke(result);
             });
             CallNative_GetPresentationResult(placement, paramsJson, callbackId);
         }
@@ -321,8 +377,28 @@ namespace Superwall
             string callbackId = Guid.NewGuid().ToString();
             BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
             {
-                // TODO: Deserialize JSON into List<ConfirmedAssignment>
-                completion?.Invoke(new List<ConfirmedAssignment>());
+                var assignments = new List<ConfirmedAssignment>();
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    if (dict != null && dict.ContainsKey("assignments"))
+                    {
+                        var list = dict["assignments"] as List<object>;
+                        if (list != null)
+                        {
+                            foreach (var item in list)
+                            {
+                                var aDict = item as Dictionary<string, object>;
+                                if (aDict == null) continue;
+                                var assignment = new ConfirmedAssignment();
+                                assignment.ExperimentId = aDict.ContainsKey("experimentId") ? aDict["experimentId"] as string : null;
+                                assignment.Variant = DeserializeVariant(aDict.ContainsKey("variant") ? aDict["variant"] as Dictionary<string, object> : null);
+                                assignments.Add(assignment);
+                            }
+                        }
+                    }
+                }
+                completion?.Invoke(assignments);
             });
             CallNative_ConfirmAllAssignments(callbackId);
         }
@@ -334,8 +410,21 @@ namespace Superwall
             string callbackId = Guid.NewGuid().ToString();
             BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
             {
-                // TODO: Deserialize JSON into RestorationResult
-                completion?.Invoke(RestorationResult.Restored());
+                RestorationResult result = RestorationResult.Restored();
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    if (dict != null && dict.ContainsKey("type"))
+                    {
+                        string type = dict["type"] as string;
+                        if (type == "failed")
+                        {
+                            string error = dict.ContainsKey("error") ? dict["error"] as string : "";
+                            result = RestorationResult.Failed(error ?? "");
+                        }
+                    }
+                }
+                completion?.Invoke(result);
             });
             CallNative_RestorePurchases(callbackId);
         }
@@ -374,6 +463,104 @@ namespace Superwall
                 completion?.Invoke(json);
             });
             CallNative_Consume(purchaseToken, callbackId);
+        }
+
+        // ============= Deserialization Helpers =============
+
+        private static Entitlement DeserializeEntitlement(Dictionary<string, object> dict)
+        {
+            if (dict == null) return new Entitlement();
+            var e = new Entitlement();
+            e.Id = dict.ContainsKey("id") ? dict["id"] as string : null;
+            e.IsActive = dict.ContainsKey("isActive") && dict["isActive"] is bool b && b;
+            if (dict.ContainsKey("type"))
+            {
+                string typeStr = dict["type"] as string;
+                if (Enum.TryParse<EntitlementType>(typeStr, true, out var et)) e.Type = et;
+            }
+            if (dict.ContainsKey("productIds") && dict["productIds"] is List<object> pids)
+            {
+                e.ProductIds = new List<string>();
+                foreach (var pid in pids) e.ProductIds.Add(pid?.ToString());
+            }
+            if (dict.ContainsKey("latestProductId")) e.LatestProductId = dict["latestProductId"] as string;
+            if (dict.ContainsKey("store"))
+            {
+                string storeStr = dict["store"] as string;
+                if (storeStr != null && Enum.TryParse<ProductStore>(storeStr, true, out var ps)) e.Store = ps;
+            }
+            if (dict.ContainsKey("startsAt") && dict["startsAt"] != null) e.StartsAt = Convert.ToInt64(dict["startsAt"]);
+            if (dict.ContainsKey("renewedAt") && dict["renewedAt"] != null) e.RenewedAt = Convert.ToInt64(dict["renewedAt"]);
+            if (dict.ContainsKey("expiresAt") && dict["expiresAt"] != null) e.ExpiresAt = Convert.ToInt64(dict["expiresAt"]);
+            if (dict.ContainsKey("isLifetime") && dict["isLifetime"] is bool lt) e.IsLifetime = lt;
+            if (dict.ContainsKey("willRenew") && dict["willRenew"] is bool wr) e.WillRenew = wr;
+            if (dict.ContainsKey("state"))
+            {
+                string stateStr = dict["state"] as string;
+                if (stateStr != null && Enum.TryParse<LatestSubscriptionState>(stateStr, true, out var ls)) e.State = ls;
+            }
+            if (dict.ContainsKey("offerType"))
+            {
+                string offerStr = dict["offerType"] as string;
+                if (offerStr != null && Enum.TryParse<LatestSubscriptionOfferType>(offerStr, true, out var ot)) e.OfferType = ot;
+            }
+            return e;
+        }
+
+        private static List<Entitlement> DeserializeEntitlementList(List<object> list)
+        {
+            var result = new List<Entitlement>();
+            if (list == null) return result;
+            foreach (var item in list)
+            {
+                var dict = item as Dictionary<string, object>;
+                if (dict != null) result.Add(DeserializeEntitlement(dict));
+            }
+            return result;
+        }
+
+        private static Variant DeserializeVariant(Dictionary<string, object> dict)
+        {
+            if (dict == null) return new Variant();
+            var v = new Variant();
+            v.Id = dict.ContainsKey("id") ? dict["id"] as string : null;
+            v.PaywallId = dict.ContainsKey("paywallId") ? dict["paywallId"] as string : null;
+            if (dict.ContainsKey("type"))
+            {
+                string typeStr = dict["type"] as string;
+                if (typeStr == "treatment") v.Type = VariantType.Treatment;
+                else if (typeStr == "holdout") v.Type = VariantType.Holdout;
+            }
+            return v;
+        }
+
+        private static Experiment DeserializeExperiment(Dictionary<string, object> dict)
+        {
+            if (dict == null) return new Experiment();
+            var exp = new Experiment();
+            exp.Id = dict.ContainsKey("id") ? dict["id"] as string : null;
+            exp.GroupId = dict.ContainsKey("groupId") ? dict["groupId"] as string : null;
+            exp.Variant = DeserializeVariant(dict.ContainsKey("variant") ? dict["variant"] as Dictionary<string, object> : null);
+            return exp;
+        }
+
+        private static PaywallInfo DeserializePaywallInfo(Dictionary<string, object> dict)
+        {
+            if (dict == null) return null;
+            var info = new PaywallInfo();
+            info.Identifier = dict.ContainsKey("identifier") ? dict["identifier"] as string : null;
+            info.Name = dict.ContainsKey("name") ? dict["name"] as string : null;
+            info.Url = dict.ContainsKey("url") ? dict["url"] as string : null;
+            if (dict.ContainsKey("productIds") && dict["productIds"] is List<object> pids)
+            {
+                info.ProductIds = new List<string>();
+                foreach (var pid in pids) info.ProductIds.Add(pid?.ToString());
+            }
+            if (dict.ContainsKey("experiment") && dict["experiment"] is Dictionary<string, object> expDict)
+            {
+                info.Experiment = DeserializeExperiment(expDict);
+            }
+            return info;
         }
 
         // ============= Options Serialization =============

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using Superwall;
 
@@ -175,15 +176,444 @@ namespace Superwall.Internal
             }
         }
 
+        #region Deserialization Helpers
+
+        private static string GetString(Dictionary<string, object> data, string key)
+        {
+            if (data != null && data.ContainsKey(key))
+                return data[key] as string;
+            return null;
+        }
+
+        private static Dictionary<string, object> GetDict(Dictionary<string, object> data, string key)
+        {
+            if (data != null && data.ContainsKey(key))
+                return data[key] as Dictionary<string, object>;
+            return null;
+        }
+
+        private static List<object> GetList(Dictionary<string, object> data, string key)
+        {
+            if (data != null && data.ContainsKey(key))
+                return data[key] as List<object>;
+            return null;
+        }
+
+        private static bool GetBool(Dictionary<string, object> data, string key, bool defaultValue = false)
+        {
+            if (data != null && data.ContainsKey(key))
+            {
+                var val = data[key];
+                if (val is bool b) return b;
+                if (val is string s) return s.Equals("true", StringComparison.OrdinalIgnoreCase);
+            }
+            return defaultValue;
+        }
+
+        private static long GetLong(Dictionary<string, object> data, string key, long defaultValue = 0)
+        {
+            if (data != null && data.ContainsKey(key))
+            {
+                var val = data[key];
+                if (val is long l) return l;
+                if (val is double d) return (long)d;
+                if (val is int i) return i;
+                if (val is string s && long.TryParse(s, out var parsed)) return parsed;
+            }
+            return defaultValue;
+        }
+
+        private static double? GetDoubleNullable(Dictionary<string, object> data, string key)
+        {
+            if (data != null && data.ContainsKey(key) && data[key] != null)
+            {
+                var val = data[key];
+                if (val is double d) return d;
+                if (val is long l) return l;
+                if (val is int i) return i;
+            }
+            return null;
+        }
+
+        private static int? GetIntNullable(Dictionary<string, object> data, string key)
+        {
+            if (data != null && data.ContainsKey(key) && data[key] != null)
+            {
+                var val = data[key];
+                if (val is long l) return (int)l;
+                if (val is double d) return (int)d;
+                if (val is int i) return i;
+            }
+            return null;
+        }
+
+        private static T? ParseEnum<T>(string value) where T : struct
+        {
+            if (string.IsNullOrEmpty(value)) return null;
+            if (Enum.TryParse<T>(value, true, out var result)) return result;
+            return null;
+        }
+
+        private static SubscriptionStatus DeserializeSubscriptionStatus(Dictionary<string, object> data)
+        {
+            if (data == null) return SubscriptionStatus.CreateUnknown();
+
+            var type = GetString(data, "type");
+            switch (type?.ToLowerInvariant())
+            {
+                case "active":
+                    var entitlementsList = GetList(data, "entitlements");
+                    var entitlements = new List<Entitlement>();
+                    if (entitlementsList != null)
+                    {
+                        foreach (var item in entitlementsList)
+                        {
+                            if (item is Dictionary<string, object> entDict)
+                                entitlements.Add(DeserializeEntitlement(entDict));
+                        }
+                    }
+                    return SubscriptionStatus.CreateActive(entitlements);
+                case "inactive":
+                    return SubscriptionStatus.CreateInactive();
+                default:
+                    return SubscriptionStatus.CreateUnknown();
+            }
+        }
+
+        private static Entitlement DeserializeEntitlement(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var entitlement = new Entitlement();
+            entitlement.Id = GetString(data, "id");
+            entitlement.IsActive = GetBool(data, "isActive");
+
+            var typeStr = GetString(data, "type");
+            entitlement.Type = ParseEnum<EntitlementType>(typeStr) ?? EntitlementType.ServiceLevel;
+
+            var productIdsList = GetList(data, "productIds");
+            if (productIdsList != null)
+                entitlement.ProductIds = productIdsList.Select(p => p?.ToString()).Where(p => p != null).ToList();
+
+            entitlement.LatestProductId = GetString(data, "latestProductId");
+
+            var storeStr = GetString(data, "store");
+            entitlement.Store = ParseEnum<ProductStore>(storeStr);
+
+            entitlement.StartsAt = data.ContainsKey("startsAt") && data["startsAt"] != null ? (long?)GetLong(data, "startsAt") : null;
+            entitlement.RenewedAt = data.ContainsKey("renewedAt") && data["renewedAt"] != null ? (long?)GetLong(data, "renewedAt") : null;
+            entitlement.ExpiresAt = data.ContainsKey("expiresAt") && data["expiresAt"] != null ? (long?)GetLong(data, "expiresAt") : null;
+
+            if (data.ContainsKey("isLifetime") && data["isLifetime"] != null)
+                entitlement.IsLifetime = GetBool(data, "isLifetime");
+            if (data.ContainsKey("willRenew") && data["willRenew"] != null)
+                entitlement.WillRenew = GetBool(data, "willRenew");
+
+            var stateStr = GetString(data, "state");
+            entitlement.State = ParseEnum<LatestSubscriptionState>(stateStr);
+
+            var offerTypeStr = GetString(data, "offerType");
+            entitlement.OfferType = ParseEnum<LatestSubscriptionOfferType>(offerTypeStr);
+
+            return entitlement;
+        }
+
+        private static PaywallInfo DeserializePaywallInfo(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var info = new PaywallInfo();
+            info.Identifier = GetString(data, "identifier");
+            info.Name = GetString(data, "name");
+            info.Url = GetString(data, "url");
+
+            var productIdsList = GetList(data, "productIds");
+            if (productIdsList != null)
+                info.ProductIds = productIdsList.Select(p => p?.ToString()).Where(p => p != null).ToList();
+
+            var experimentDict = GetDict(data, "experiment");
+            if (experimentDict != null)
+                info.Experiment = DeserializeExperiment(experimentDict);
+
+            info.PresentedByPlacementWithName = GetString(data, "presentedByPlacementWithName");
+            info.PresentedByPlacementWithId = GetString(data, "presentedByPlacementWithId");
+            info.PresentedByPlacementAt = GetString(data, "presentedByPlacementAt");
+            info.PresentedBy = GetString(data, "presentedBy");
+            info.PresentationSourceType = GetString(data, "presentationSourceType");
+            info.PaywalljsVersion = GetString(data, "paywalljsVersion");
+
+            info.ResponseLoadDuration = GetDoubleNullable(data, "responseLoadDuration");
+            info.WebViewLoadDuration = GetDoubleNullable(data, "webViewLoadDuration");
+            info.ProductsLoadDuration = GetDoubleNullable(data, "productsLoadDuration");
+
+            if (data.ContainsKey("isFreeTrialAvailable") && data["isFreeTrialAvailable"] != null)
+                info.IsFreeTrialAvailable = GetBool(data, "isFreeTrialAvailable");
+
+            var featureGatingStr = GetString(data, "featureGatingBehavior");
+            info.FeatureGatingBehavior = ParseEnum<FeatureGatingBehavior>(featureGatingStr);
+
+            var closeReasonStr = GetString(data, "closeReason");
+            info.CloseReason = ParseEnum<PaywallCloseReason>(closeReasonStr);
+
+            return info;
+        }
+
+        private static Experiment DeserializeExperiment(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var experiment = new Experiment();
+            experiment.Id = GetString(data, "id");
+            experiment.GroupId = GetString(data, "groupId");
+
+            var variantDict = GetDict(data, "variant");
+            if (variantDict != null)
+            {
+                experiment.Variant = new Variant();
+                experiment.Variant.Id = GetString(variantDict, "id");
+                experiment.Variant.PaywallId = GetString(variantDict, "paywallId");
+                var typeStr = GetString(variantDict, "type");
+                experiment.Variant.Type = typeStr?.ToLowerInvariant() == "holdout"
+                    ? VariantType.Holdout
+                    : VariantType.Treatment;
+            }
+
+            return experiment;
+        }
+
+        private static CustomerInfo DeserializeCustomerInfo(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var info = new CustomerInfo();
+            info.UserId = GetString(data, "userId");
+
+            var entitlementsList = GetList(data, "entitlements");
+            if (entitlementsList != null)
+            {
+                info.Entitlements = new List<Entitlement>();
+                foreach (var item in entitlementsList)
+                {
+                    if (item is Dictionary<string, object> entDict)
+                        info.Entitlements.Add(DeserializeEntitlement(entDict));
+                }
+            }
+
+            return info;
+        }
+
+        private static SuperwallEventInfo DeserializeSuperwallEventInfo(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var info = new SuperwallEventInfo();
+
+            var eventTypeStr = GetString(data, "eventType");
+            if (eventTypeStr != null)
+            {
+                // Try to parse the event type string to the enum
+                var parsed = ParseEnum<EventType>(eventTypeStr);
+                if (parsed.HasValue)
+                    info.EventType = parsed.Value;
+            }
+
+            var paramsDict = GetDict(data, "params");
+            info.Params = paramsDict;
+
+            return info;
+        }
+
+        private static RedemptionResult DeserializeRedemptionResult(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var type = GetString(data, "type");
+            var code = GetString(data, "code");
+
+            switch (type?.ToLowerInvariant())
+            {
+                case "success":
+                    var redemptionInfoDict = GetDict(data, "redemptionInfo");
+                    var redemptionInfo = DeserializeRedemptionInfo(redemptionInfoDict);
+                    return RedemptionResult.Success(code, redemptionInfo);
+
+                case "error":
+                    var errorMsg = GetString(data, "error");
+                    var errorInfo = new ErrorInfo { Message = errorMsg };
+                    return RedemptionResult.Error(code, errorInfo);
+
+                case "expiredcode":
+                    var resent = GetBool(data, "resent");
+                    var obfuscatedEmail = GetString(data, "obfuscatedEmail");
+                    var expiredCodeInfo = new ExpiredCodeInfo { Resent = resent, ObfuscatedEmail = obfuscatedEmail };
+                    return RedemptionResult.ExpiredCode(code, expiredCodeInfo);
+
+                case "invalidcode":
+                    return RedemptionResult.InvalidCode(code);
+
+                case "expiredsubscription":
+                    var expSubInfoDict = GetDict(data, "redemptionInfo");
+                    var expSubInfo = DeserializeRedemptionInfo(expSubInfoDict);
+                    return RedemptionResult.ExpiredSubscription(code, expSubInfo);
+
+                default:
+                    return null;
+            }
+        }
+
+        private static RedemptionInfo DeserializeRedemptionInfo(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var info = new RedemptionInfo();
+
+            var entitlementsList = GetList(data, "entitlements");
+            if (entitlementsList != null)
+            {
+                info.Entitlements = new List<Entitlement>();
+                foreach (var item in entitlementsList)
+                {
+                    if (item is Dictionary<string, object> entDict)
+                        info.Entitlements.Add(DeserializeEntitlement(entDict));
+                }
+            }
+
+            return info;
+        }
+
+        private static PaywallResult DeserializePaywallResult(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var type = GetString(data, "type");
+            switch (type?.ToLowerInvariant())
+            {
+                case "purchased":
+                    var productId = GetString(data, "productId");
+                    return PaywallResult.Purchased(productId);
+                case "declined":
+                    return PaywallResult.Declined();
+                case "restored":
+                    return PaywallResult.Restored();
+                default:
+                    return null;
+            }
+        }
+
+        private static PaywallSkippedReason DeserializePaywallSkippedReason(string reason)
+        {
+            switch (reason?.ToLowerInvariant())
+            {
+                case "holdout":
+                    return PaywallSkippedReason.Holdout;
+                case "noaudiencematch":
+                    return PaywallSkippedReason.NoAudienceMatch;
+                case "placementnotfound":
+                    return PaywallSkippedReason.PlacementNotFound;
+                default:
+                    return PaywallSkippedReason.NoAudienceMatch;
+            }
+        }
+
+        private static CustomCallback DeserializeCustomCallback(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var callback = new CustomCallback();
+            callback.Name = GetString(data, "name");
+            callback.Variables = GetDict(data, "variables");
+            return callback;
+        }
+
+        private static Dictionary<string, object> SerializePurchaseResult(PurchaseResult result)
+        {
+            var dict = new Dictionary<string, object>();
+            switch (result.Type)
+            {
+                case PurchaseResult.ResultType.Cancelled:
+                    dict["type"] = "cancelled";
+                    break;
+                case PurchaseResult.ResultType.Purchased:
+                    dict["type"] = "purchased";
+                    break;
+                case PurchaseResult.ResultType.Pending:
+                    dict["type"] = "pending";
+                    break;
+                case PurchaseResult.ResultType.Failed:
+                    dict["type"] = "failed";
+                    if (result is PurchaseResult.FailedResult failedResult)
+                        dict["error"] = failedResult.Error ?? "";
+                    break;
+            }
+            return dict;
+        }
+
+        private static Dictionary<string, object> SerializeRestorationResult(RestorationResult result)
+        {
+            var dict = new Dictionary<string, object>();
+            switch (result.Type)
+            {
+                case RestorationResult.ResultType.Restored:
+                    dict["type"] = "restored";
+                    break;
+                case RestorationResult.ResultType.Failed:
+                    dict["type"] = "failed";
+                    if (result is RestorationResult.FailedResult failedResult)
+                        dict["error"] = failedResult.Error ?? "";
+                    break;
+            }
+            return dict;
+        }
+
+        private static Dictionary<string, object> SerializeCustomCallbackResult(CustomCallbackResult result)
+        {
+            if (result == null) return new Dictionary<string, object> { { "status", "failure" } };
+
+            var dict = new Dictionary<string, object>();
+            dict["status"] = result.Status == CustomCallbackResultStatus.Success ? "success" : "failure";
+            if (result.Data != null)
+                dict["data"] = result.Data;
+            return dict;
+        }
+
+        private static void SendResponseToNative(string callbackId, Dictionary<string, object> resultDict)
+        {
+            if (string.IsNullOrEmpty(callbackId)) return;
+            var json = Json.Serialize(resultDict);
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_RespondToPurchaseController(callbackId, json);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.RespondToPurchaseController(callbackId, json);
+#else
+            Debug.Log($"[Superwall] RespondToPurchaseController(callbackId={callbackId}, result={json})");
+#endif
+        }
+
+        private static void SendRestoreResponseToNative(string callbackId, Dictionary<string, object> resultDict)
+        {
+            if (string.IsNullOrEmpty(callbackId)) return;
+            var json = Json.Serialize(resultDict);
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_RespondToRestorePurchases(callbackId, json);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.RespondToRestorePurchases(callbackId, json);
+#else
+            Debug.Log($"[Superwall] RespondToRestorePurchases(callbackId={callbackId}, result={json})");
+#endif
+        }
+
+        #endregion
+
         #region Delegate Handlers
 
         private void HandleSubscriptionStatusDidChange(Dictionary<string, object> data)
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize SubscriptionStatus from/to from data
-            SubscriptionStatus from = null;
-            SubscriptionStatus to = null;
+            var fromDict = GetDict(data, "from");
+            var toDict = GetDict(data, "to");
+            SubscriptionStatus from = DeserializeSubscriptionStatus(fromDict);
+            SubscriptionStatus to = DeserializeSubscriptionStatus(toDict);
             Delegate.SubscriptionStatusDidChange(from, to);
         }
 
@@ -191,8 +621,7 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize SuperwallEventInfo from data
-            SuperwallEventInfo eventInfo = null;
+            SuperwallEventInfo eventInfo = DeserializeSuperwallEventInfo(data);
             Delegate.HandleSuperwallEvent(eventInfo);
         }
 
@@ -208,8 +637,7 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize PaywallInfo from data
-            PaywallInfo paywallInfo = null;
+            PaywallInfo paywallInfo = DeserializePaywallInfo(data);
             Delegate.WillDismissPaywall(paywallInfo);
         }
 
@@ -217,8 +645,7 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize PaywallInfo from data
-            PaywallInfo paywallInfo = null;
+            PaywallInfo paywallInfo = DeserializePaywallInfo(data);
             Delegate.WillPresentPaywall(paywallInfo);
         }
 
@@ -226,8 +653,7 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize PaywallInfo from data
-            PaywallInfo paywallInfo = null;
+            PaywallInfo paywallInfo = DeserializePaywallInfo(data);
             Delegate.DidDismissPaywall(paywallInfo);
         }
 
@@ -235,8 +661,7 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize PaywallInfo from data
-            PaywallInfo paywallInfo = null;
+            PaywallInfo paywallInfo = DeserializePaywallInfo(data);
             Delegate.DidPresentPaywall(paywallInfo);
         }
 
@@ -280,8 +705,7 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize RedemptionResult from data
-            RedemptionResult result = null;
+            RedemptionResult result = DeserializeRedemptionResult(data);
             Delegate.DidRedeemLink(result);
         }
 
@@ -289,10 +713,18 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            var fullURL = data != null && data.ContainsKey("fullURL") ? data["fullURL"] as string : null;
-            // TODO: Deserialize pathComponents and queryParameters from data
+            var fullURL = GetString(data, "fullURL");
+
             List<string> pathComponents = null;
+            var pathList = GetList(data, "pathComponents");
+            if (pathList != null)
+                pathComponents = pathList.Select(p => p?.ToString()).Where(p => p != null).ToList();
+
             Dictionary<string, string> queryParameters = null;
+            var queryDict = GetDict(data, "queryParameters");
+            if (queryDict != null)
+                queryParameters = queryDict.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString());
+
             Delegate.HandleSuperwallDeepLink(fullURL, pathComponents, queryParameters);
         }
 
@@ -300,9 +732,10 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize CustomerInfo from/to from data
-            CustomerInfo from = null;
-            CustomerInfo to = null;
+            var fromDict = GetDict(data, "from");
+            var toDict = GetDict(data, "to");
+            CustomerInfo from = DeserializeCustomerInfo(fromDict);
+            CustomerInfo to = DeserializeCustomerInfo(toDict);
             Delegate.CustomerInfoDidChange(from, to);
         }
 
@@ -310,7 +743,6 @@ namespace Superwall.Internal
         {
             if (Delegate == null) return;
 
-            // TODO: Deserialize newAttributes from data
             var newAttributes = data != null && data.ContainsKey("newAttributes")
                 ? data["newAttributes"] as Dictionary<string, object>
                 : null;
@@ -325,12 +757,13 @@ namespace Superwall.Internal
         {
             if (PurchaseController == null) return;
 
-            var productId = data != null && data.ContainsKey("productId") ? data["productId"] as string : null;
-            var callbackId = data != null && data.ContainsKey("callbackId") ? data["callbackId"] as string : null;
+            var productId = GetString(data, "productId");
+            var callbackId = GetString(data, "callbackId");
 
             PurchaseController.PurchaseFromAppStore(productId, (result) =>
             {
-                // TODO: Serialize PurchaseResult and send back to native via callbackId
+                var resultDict = SerializePurchaseResult(result);
+                SendResponseToNative(callbackId, resultDict);
             });
         }
 
@@ -338,14 +771,15 @@ namespace Superwall.Internal
         {
             if (PurchaseController == null) return;
 
-            var productId = data != null && data.ContainsKey("productId") ? data["productId"] as string : null;
-            var basePlanId = data != null && data.ContainsKey("basePlanId") ? data["basePlanId"] as string : null;
-            var offerId = data != null && data.ContainsKey("offerId") ? data["offerId"] as string : null;
-            var callbackId = data != null && data.ContainsKey("callbackId") ? data["callbackId"] as string : null;
+            var productId = GetString(data, "productId");
+            var basePlanId = GetString(data, "basePlanId");
+            var offerId = GetString(data, "offerId");
+            var callbackId = GetString(data, "callbackId");
 
             PurchaseController.PurchaseFromGooglePlay(productId, basePlanId, offerId, (result) =>
             {
-                // TODO: Serialize PurchaseResult and send back to native via callbackId
+                var resultDict = SerializePurchaseResult(result);
+                SendResponseToNative(callbackId, resultDict);
             });
         }
 
@@ -353,11 +787,12 @@ namespace Superwall.Internal
         {
             if (PurchaseController == null) return;
 
-            var callbackId = data != null && data.ContainsKey("callbackId") ? data["callbackId"] as string : null;
+            var callbackId = GetString(data, "callbackId");
 
             PurchaseController.RestorePurchases((result) =>
             {
-                // TODO: Serialize RestorationResult and send back to native via callbackId
+                var resultDict = SerializeRestorationResult(result);
+                SendRestoreResponseToNative(callbackId, resultDict);
             });
         }
 
@@ -367,28 +802,31 @@ namespace Superwall.Internal
 
         private void HandleOnPresent(Dictionary<string, object> data)
         {
-            var handlerId = data != null && data.ContainsKey("handlerId") ? data["handlerId"] as string : null;
+            var handlerId = GetString(data, "handlerId");
             if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
 
             var handler = _presentationHandlers[handlerId];
             if (handler.OnPresent == null) return;
 
-            // TODO: Deserialize PaywallInfo from data
-            PaywallInfo paywallInfo = null;
+            var paywallInfoDict = GetDict(data, "paywallInfo");
+            PaywallInfo paywallInfo = DeserializePaywallInfo(paywallInfoDict);
             handler.OnPresent(paywallInfo);
         }
 
         private void HandleOnDismiss(Dictionary<string, object> data)
         {
-            var handlerId = data != null && data.ContainsKey("handlerId") ? data["handlerId"] as string : null;
+            var handlerId = GetString(data, "handlerId");
             if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
 
             var handler = _presentationHandlers[handlerId];
             if (handler.OnDismiss == null) return;
 
-            // TODO: Deserialize PaywallInfo and PaywallResult from data
-            PaywallInfo paywallInfo = null;
-            PaywallResult paywallResult = null;
+            var paywallInfoDict = GetDict(data, "paywallInfo");
+            PaywallInfo paywallInfo = DeserializePaywallInfo(paywallInfoDict);
+
+            var resultDict = GetDict(data, "result");
+            PaywallResult paywallResult = DeserializePaywallResult(resultDict);
+
             handler.OnDismiss(paywallInfo, paywallResult);
         }
 
@@ -406,29 +844,54 @@ namespace Superwall.Internal
 
         private void HandleOnSkip(Dictionary<string, object> data)
         {
-            var handlerId = data != null && data.ContainsKey("handlerId") ? data["handlerId"] as string : null;
+            var handlerId = GetString(data, "handlerId");
             if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
 
             var handler = _presentationHandlers[handlerId];
             if (handler.OnSkip == null) return;
 
-            // TODO: Deserialize PaywallSkippedReason from data
-            PaywallSkippedReason reason = default;
+            var reasonStr = GetString(data, "reason");
+            PaywallSkippedReason reason = DeserializePaywallSkippedReason(reasonStr);
             handler.OnSkip(reason);
         }
 
         private void HandleOnCustomCallback(Dictionary<string, object> data)
         {
-            var handlerId = data != null && data.ContainsKey("handlerId") ? data["handlerId"] as string : null;
+            var handlerId = GetString(data, "handlerId");
             if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
 
             var handler = _presentationHandlers[handlerId];
             if (handler.OnCustomCallback == null) return;
 
-            // TODO: Deserialize CustomCallback from data
-            CustomCallback customCallback = null;
+            var callbackDict = GetDict(data, "customCallback");
+            CustomCallback customCallback = DeserializeCustomCallback(callbackDict);
             CustomCallbackResult result = handler.OnCustomCallback(customCallback);
-            // TODO: Serialize result and send back to native
+
+            // Serialize result and send back to native via callbackId
+            var callbackId = GetString(data, "callbackId");
+            if (!string.IsNullOrEmpty(callbackId))
+            {
+                var resultDict = SerializeCustomCallbackResult(result);
+                var json = Json.Serialize(resultDict);
+                // Send via async response mechanism
+                var responsePayload = new Dictionary<string, object>
+                {
+                    { "callbackId", callbackId },
+                    { "result", resultDict }
+                };
+                var responseJson = Json.Serialize(new Dictionary<string, object>
+                {
+                    { "method", "asyncResponse" },
+                    { "data", responsePayload }
+                });
+                // Use the pending async callback if registered
+                if (_pendingAsyncCallbacks.ContainsKey(callbackId))
+                {
+                    var callback = _pendingAsyncCallbacks[callbackId];
+                    _pendingAsyncCallbacks.Remove(callbackId);
+                    callback?.Invoke(Json.Serialize(resultDict));
+                }
+            }
         }
 
         #endregion

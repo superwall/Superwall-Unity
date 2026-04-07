@@ -8,7 +8,7 @@ This package provides a Unity C# wrapper around the native [SuperwallKit](https:
 
 - Unity 6+ (6000.4+)
 - iOS 16.0+
-- Android minSdk 26+
+- Android minSdk 25+
 
 ## Installation
 
@@ -22,11 +22,7 @@ https://github.com/superwall/Superwall-Unity.git
 
 **iOS** — The post-build processor automatically creates a Podfile and runs `pod install`. Requires [CocoaPods](https://cocoapods.org/).
 
-**Android** — Add to your `mainTemplate.gradle`:
-```groovy
-implementation 'com.superwall.sdk:superwall-android:2.+'
-implementation 'com.android.billingclient:billing:8.0.0'
-```
+**Android** — No manual setup needed. The package includes a Gradle library module that automatically pulls the Superwall Android SDK and billing dependencies from Maven.
 
 ## Quick Start
 
