@@ -1,6 +1,14 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [0.2.3]
+
+### Breaking Changes
+* `Configure` completion signature changed from `Action<bool>` to `Action<ConfigurationResult>` to match the native SDKs' `Result<Unit>` semantics. The result exposes `IsSuccess` and a typed `FailedResult.Error` on failure. Android now propagates SDK init errors through this; iOS still always signals success since SuperwallKit's completion has no failure variant.
+
+### Cleanup
+* Renamed asmdef files to `Superwall.*`
+
 ## [0.2.1]
 
 ## Enhancements

@@ -27,7 +27,7 @@ namespace Superwall
 
         // ------- Configuration -------
 
-        public static Superwall Configure(string apiKey, SuperwallOptions options = null, IPurchaseController purchaseController = null, Action<bool> completion = null)
+        public static Superwall Configure(string apiKey, SuperwallOptions options = null, IPurchaseController purchaseController = null, Action<ConfigurationResult> completion = null)
         {
             if (_shared != null)
             {
@@ -51,8 +51,15 @@ namespace Superwall
                 BridgeCallbackHandler.Instance.RegisterAsyncCallback(completionCallbackId, (json) =>
                 {
                     var data = Json.Deserialize(json) as Dictionary<string, object>;
-                    bool success = data != null && data.ContainsKey("success") && (bool)data["success"];
-                    completion(success);
+                    if (data != null && data.ContainsKey("success") && (bool)data["success"])
+                    {
+                        completion(ConfigurationResult.Success());
+                    }
+                    else
+                    {
+                        string error = data != null && data.ContainsKey("error") ? data["error"] as string : "Unknown error";
+                        completion(ConfigurationResult.Failed(error));
+                    }
                 });
             }
 

@@ -75,9 +75,17 @@ class SuperwallUnityBridge {
             override fun getCurrentActivity(): Activity? = UnityPlayer.currentActivity
         }
 
-        Superwall.configure(activity.application, apiKey, options = options, activityProvider = unityActivityProvider) {
+        Superwall.configure(activity.application, apiKey, options = options, activityProvider = unityActivityProvider) { result ->
             completionCallbackId?.let { cbId ->
-                sendAsyncResponse(cbId, JSONObject().put("success", true))
+                val response = JSONObject()
+                result.fold(
+                    onSuccess = { response.put("success", true) },
+                    onFailure = { error ->
+                        response.put("success", false)
+                        response.put("error", error.message ?: "Unknown error")
+                    }
+                )
+                sendAsyncResponse(cbId, response)
             }
         }
     }
