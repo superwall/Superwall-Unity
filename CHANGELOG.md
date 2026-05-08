@@ -3,8 +3,20 @@ All notable changes to this package will be documented in this file.
 
 ## [0.2.3]
 
+## Enhancements
+
 ### Android Purchase Controller
 * Android purchase controller parity with the iOS purchase controller flow
+* `SetIntegrationAttribute` / `SetIntegrationAttributes` now route to `Superwall.instance.setIntegrationAttributes` with `AttributionProvider` parsing
+* `GetOverrideProductsByName` / `SetOverrideProductsByName` now read/write `Superwall.instance.overrideProductsByName`
+* `GetEntitlementsByProductIds` now resolves through `entitlements.byProductIds(...)` and returns serialized entitlement set
+* `Consume(token, completion)` now invokes the suspend `Superwall.instance.consume(token)` and reports `success`/`failed` with token or error
+### iOS Local Resources
+* `SetLocalResources(Dictionary<string, string>)` is now implemented on iOS — sets `Superwall.shared.options.localResources`, supporting both `file://` URLs and raw paths
+
+## Fixes
+* Minor issue fixes
+* Fix mapping issue with skip handlers and product shape for getProducts
 
 ## [0.2.2]
 

@@ -9,6 +9,7 @@ import com.superwall.sdk.delegate.SuperwallDelegate
 import com.superwall.sdk.delegate.PurchaseResult
 import com.superwall.sdk.delegate.RestorationResult
 import com.superwall.sdk.delegate.subscription_controller.PurchaseController
+import com.superwall.sdk.models.attribution.AttributionProvider
 import com.android.billingclient.api.ProductDetails
 import kotlinx.coroutines.CompletableDeferred
 import com.superwall.sdk.identity.IdentityOptions
@@ -139,8 +140,27 @@ class SuperwallUnityBridge {
 
     fun getUserAttributes(): String = JSONObject(Superwall.instance.userAttributes).toString()
 
-    fun setIntegrationAttribute(attribute: String, value: String?) {}
-    fun setIntegrationAttributes(attributesJson: String) {}
+    fun setIntegrationAttribute(attribute: String, value: String?) {
+        val provider = parseAttributionProvider(attribute) ?: return
+        Superwall.instance.setIntegrationAttributes(mapOf(provider to (value ?: "")))
+    }
+
+    fun setIntegrationAttributes(attributesJson: String) {
+        try {
+            val json = JSONObject(attributesJson)
+            val map = mutableMapOf<AttributionProvider, String>()
+            json.keys().forEach { key ->
+                val provider = parseAttributionProvider(key) ?: return@forEach
+                map[provider] = json.optString(key, "")
+            }
+            if (map.isNotEmpty()) {
+                Superwall.instance.setIntegrationAttributes(map)
+            }
+        } catch (_: JSONException) {}
+    }
+
+    private fun parseAttributionProvider(name: String): AttributionProvider? =
+        AttributionProvider.entries.firstOrNull { it.rawName == name }
 
     fun getDeviceAttributes(callbackId: String) {
         scope.launch {
@@ -178,7 +198,16 @@ class SuperwallUnityBridge {
         }.toString()
     }
 
-    fun getEntitlementsByProductIds(productIdsJson: String): String = "[]"
+    fun getEntitlementsByProductIds(productIdsJson: String): String {
+        return try {
+            val arr = JSONArray(productIdsJson)
+            val ids = (0 until arr.length()).map { arr.getString(it) }.toSet()
+            val result = Superwall.instance.entitlements.byProductIds(ids)
+            serializeEntitlementSet(result).toString()
+        } catch (_: JSONException) {
+            "[]"
+        }
+    }
 
     fun getCustomerInfo(callbackId: String) {
         scope.launch {
@@ -249,10 +278,20 @@ class SuperwallUnityBridge {
                     put("paywallInfo", serializePaywallInfo(info))
                 })
             }
-            handler.onDismiss { info, _ ->
+            handler.onDismiss { info, result ->
                 sendToUnity("onDismiss", JSONObject().apply {
                     put("handlerId", handlerId)
                     put("paywallInfo", serializePaywallInfo(info))
+                    put("result", JSONObject().apply {
+                        when (result) {
+                            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Purchased -> {
+                                put("type", "purchased")
+                                put("productId", result.productId)
+                            }
+                            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Declined -> put("type", "declined")
+                            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Restored -> put("type", "restored")
+                        }
+                    })
                 })
             }
             handler.onError { error ->
@@ -262,9 +301,16 @@ class SuperwallUnityBridge {
                 })
             }
             handler.onSkip { reason ->
+                val reasonStr = when (reason) {
+                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.Holdout -> "holdout"
+                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.NoAudienceMatch -> "noAudienceMatch"
+                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.PlacementNotFound -> "placementNotFound"
+                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.UserIsSubscribed -> "userIsSubscribed"
+                    else -> "noAudienceMatch"
+                }
                 sendToUnity("onSkip", JSONObject().apply {
                     put("handlerId", handlerId)
-                    put("reason", reason::class.simpleName ?: "unknown")
+                    put("reason", reasonStr)
                 })
             }
         }
@@ -329,9 +375,42 @@ class SuperwallUnityBridge {
         }
     }
 
-    fun getOverrideProductsByName(): String? = null
-    fun setOverrideProductsByName(productsJson: String?) {}
-    fun consume(purchaseToken: String, callbackId: String) { sendAsyncResponse(callbackId, JSONObject().put("result", "not_implemented")) }
+    fun getOverrideProductsByName(): String? {
+        val overrides = Superwall.instance.overrideProductsByName
+        if (overrides.isEmpty()) return null
+        return JSONObject(overrides as Map<*, *>).toString()
+    }
+
+    fun setOverrideProductsByName(productsJson: String?) {
+        if (productsJson == null) {
+            Superwall.instance.overrideProductsByName = emptyMap()
+            return
+        }
+        try {
+            val json = JSONObject(productsJson)
+            val map = mutableMapOf<String, String>()
+            json.keys().forEach { key -> map[key] = json.optString(key, "") }
+            Superwall.instance.overrideProductsByName = map
+        } catch (_: JSONException) {}
+    }
+
+    fun consume(purchaseToken: String, callbackId: String) {
+        scope.launch {
+            val result = Superwall.instance.consume(purchaseToken)
+            val data = JSONObject()
+            result.fold(
+                onSuccess = { token ->
+                    data.put("result", "success")
+                    data.put("token", token)
+                },
+                onFailure = { error ->
+                    data.put("result", "failed")
+                    data.put("error", error.message ?: "Unknown error")
+                }
+            )
+            sendAsyncResponse(callbackId, data)
+        }
+    }
     fun respondToPurchaseController(callbackId: String, resultJson: String) {
         val controller = unityPurchaseController ?: return
         val result = try {
@@ -486,9 +565,108 @@ class SuperwallUnityBridge {
     private fun serializePaywallInfo(info: PaywallInfo) = JSONObject().apply {
         put("identifier", info.identifier)
         put("name", info.name)
-        put("url", info.url)
+        put("url", info.url.toString())
         put("productIds", JSONArray(info.productIds))
+        put("products", JSONArray().apply {
+            info.products.forEach { p ->
+                put(JSONObject().apply {
+                    put("id", p.compositeId)
+                    put("name", p.name)
+                    put("entitlements", serializeEntitlementSet(p.entitlements))
+                })
+            }
+        })
         info.experiment?.let { put("experiment", serializeExperiment(it)) }
+        info.presentedByEventWithName?.let { put("presentedByPlacementWithName", it) }
+        info.presentedByEventWithId?.let { put("presentedByPlacementWithId", it) }
+        info.presentedByEventAt?.let { put("presentedByPlacementAt", it) }
+        put("presentedBy", info.presentedBy)
+        info.presentationSourceType?.let { put("presentationSourceType", it) }
+        info.responseLoadStartTime?.let { put("responseLoadStartTime", it) }
+        info.responseLoadCompleteTime?.let { put("responseLoadCompleteTime", it) }
+        info.responseLoadFailTime?.let { put("responseLoadFailTime", it) }
+        info.responseLoadDuration?.let { put("responseLoadDuration", it) }
+        info.webViewLoadStartTime?.let { put("webViewLoadStartTime", it) }
+        info.webViewLoadCompleteTime?.let { put("webViewLoadCompleteTime", it) }
+        info.webViewLoadFailTime?.let { put("webViewLoadFailTime", it) }
+        info.webViewLoadDuration?.let { put("webViewLoadDuration", it) }
+        info.productsLoadStartTime?.let { put("productsLoadStartTime", it) }
+        info.productsLoadCompleteTime?.let { put("productsLoadCompleteTime", it) }
+        info.productsLoadFailTime?.let { put("productsLoadFailTime", it) }
+        info.productsLoadDuration?.let { put("productsLoadDuration", it) }
+        info.paywalljsVersion?.let { put("paywalljsVersion", it) }
+        put("isFreeTrialAvailable", info.isFreeTrialAvailable)
+        put("featureGatingBehavior", when (info.featureGatingBehavior) {
+            is com.superwall.sdk.models.config.FeatureGatingBehavior.Gated -> "gated"
+            is com.superwall.sdk.models.config.FeatureGatingBehavior.NonGated -> "nonGated"
+        })
+        put("closeReason", when (info.closeReason) {
+            is com.superwall.sdk.paywall.presentation.PaywallCloseReason.SystemLogic -> "systemLogic"
+            is com.superwall.sdk.paywall.presentation.PaywallCloseReason.ForNextPaywall -> "forNextPaywall"
+            is com.superwall.sdk.paywall.presentation.PaywallCloseReason.WebViewFailedToLoad -> "webViewFailedToLoad"
+            is com.superwall.sdk.paywall.presentation.PaywallCloseReason.ManualClose -> "manualClose"
+            is com.superwall.sdk.paywall.presentation.PaywallCloseReason.None -> "none"
+        })
+        put("state", JSONObject(info.state))
+        put("localNotifications", JSONArray().apply {
+            info.localNotifications.forEach { n ->
+                put(JSONObject().apply {
+                    put("id", n.id)
+                    put("type", when (n.type) {
+                        is com.superwall.sdk.models.paywall.LocalNotificationType.TrialStarted -> "trialStarted"
+                        else -> "unsupported"
+                    })
+                    put("title", n.title)
+                    n.subtitle?.let { put("subtitle", it) }
+                    put("body", n.body)
+                    put("delay", n.delay)
+                })
+            }
+        })
+        put("computedPropertyRequests", JSONArray().apply {
+            info.computedPropertyRequests.forEach { c ->
+                put(JSONObject().apply {
+                    put("type", when (c.type) {
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.MINUTES_SINCE -> "minutesSince"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.HOURS_SINCE -> "hoursSince"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.DAYS_SINCE -> "daysSince"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.MONTHS_SINCE -> "monthsSince"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.YEARS_SINCE -> "yearsSince"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.PLACEMENTS_IN_HOUR -> "placementsInHour"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.PLACEMENTS_IN_DAY -> "placementsInDay"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.PLACEMENTS_IN_WEEK -> "placementsInWeek"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.PLACEMENTS_IN_MONTH -> "placementsInMonth"
+                        com.superwall.sdk.models.config.ComputedPropertyRequest.ComputedPropertyRequestType.PLACEMENTS_SINCE_INSTALL -> "placementsSinceInstall"
+                    })
+                    put("eventName", c.eventName)
+                })
+            }
+        })
+        put("surveys", JSONArray().apply {
+            info.surveys.forEach { s ->
+                put(JSONObject().apply {
+                    put("id", s.id)
+                    put("assignmentKey", s.assignmentKey)
+                    put("title", s.title)
+                    put("message", s.message)
+                    put("options", JSONArray().apply {
+                        s.options.forEach { o ->
+                            put(JSONObject().apply {
+                                put("id", o.id)
+                                put("text", o.title)
+                            })
+                        }
+                    })
+                    put("presentationCondition", when (s.presentationCondition) {
+                        com.superwall.sdk.config.models.SurveyShowCondition.ON_MANUAL_CLOSE -> "onManualClose"
+                        com.superwall.sdk.config.models.SurveyShowCondition.ON_PURCHASE -> "onPurchase"
+                    })
+                    put("presentationProbability", s.presentationProbability)
+                    put("includeOtherOption", s.includeOtherOption)
+                    put("includeCloseOption", s.includeCloseOption)
+                })
+            }
+        })
     }
 
     private fun serializeExperiment(exp: Experiment) = JSONObject().apply {
@@ -546,6 +724,40 @@ class SuperwallUnityBridge {
         put("languageCode", product.languageCode)
         put("price", product.price.toString())
         put("productType", product.productType)
+    }
+
+    private fun serializeRedemptionResult(result: RedemptionResult): JSONObject = JSONObject().apply {
+        when (result) {
+            is RedemptionResult.Success -> {
+                put("type", "success")
+                put("code", result.code)
+                put("redemptionInfo", JSONObject().apply {
+                    put("entitlements", serializeEntitlementSet(result.redemptionInfo.entitlements.toSet()))
+                })
+            }
+            is RedemptionResult.Error -> {
+                put("type", "error")
+                put("code", result.code)
+                put("error", result.error.message ?: "")
+            }
+            is RedemptionResult.Expired -> {
+                put("type", "expiredCode")
+                put("code", result.code)
+                put("resent", result.expired.resent)
+                put("obfuscatedEmail", result.expired.obfuscatedEmail ?: JSONObject.NULL)
+            }
+            is RedemptionResult.InvalidCode -> {
+                put("type", "invalidCode")
+                put("code", result.code)
+            }
+            is RedemptionResult.ExpiredSubscription -> {
+                put("type", "expiredSubscription")
+                put("code", result.code)
+                put("redemptionInfo", JSONObject().apply {
+                    put("entitlements", serializeEntitlementSet(result.redemptionInfo.entitlements.toSet()))
+                })
+            }
+        }
     }
 
     private fun serializePresentationResult(result: PresentationResult) = JSONObject().apply {
@@ -640,7 +852,7 @@ class SuperwallUnityBridge {
 
     // --- Delegate ---
 
-    private class SuperwallUnityDelegateImpl : SuperwallDelegate {
+    private inner class SuperwallUnityDelegateImpl : SuperwallDelegate {
         override fun subscriptionStatusDidChange(from: SubscriptionStatus, to: SubscriptionStatus) {
             sendToUnity("subscriptionStatusDidChange", JSONObject().apply {
                 put("from", serializeSubscriptionStatus(from))
@@ -660,19 +872,19 @@ class SuperwallUnityBridge {
         }
 
         override fun willDismissPaywall(withInfo: PaywallInfo) {
-            sendToUnity("willDismissPaywall", JSONObject().put("identifier", withInfo.identifier))
+            sendToUnity("willDismissPaywall", serializePaywallInfo(withInfo))
         }
 
         override fun willPresentPaywall(withInfo: PaywallInfo) {
-            sendToUnity("willPresentPaywall", JSONObject().put("identifier", withInfo.identifier))
+            sendToUnity("willPresentPaywall", serializePaywallInfo(withInfo))
         }
 
         override fun didDismissPaywall(withInfo: PaywallInfo) {
-            sendToUnity("didDismissPaywall", JSONObject().put("identifier", withInfo.identifier))
+            sendToUnity("didDismissPaywall", serializePaywallInfo(withInfo))
         }
 
         override fun didPresentPaywall(withInfo: PaywallInfo) {
-            sendToUnity("didPresentPaywall", JSONObject().put("identifier", withInfo.identifier))
+            sendToUnity("didPresentPaywall", serializePaywallInfo(withInfo))
         }
 
         override fun paywallWillOpenURL(url: URI) {
@@ -695,32 +907,19 @@ class SuperwallUnityBridge {
         }
 
         override fun didRedeemLink(result: RedemptionResult) {
-            sendToUnity("didRedeemLink", JSONObject().apply {
-                put("result", JSONObject().apply {
-                    when (result) {
-                        is RedemptionResult.Success -> put("status", "success")
-                        is RedemptionResult.Error -> {
-                            put("status", "error")
-                            put("error", result.error.message ?: "")
-                        }
-                        is RedemptionResult.Expired -> put("status", "expired")
-                        is RedemptionResult.InvalidCode -> put("status", "invalidCode")
-                        is RedemptionResult.ExpiredSubscription -> put("status", "expiredSubscription")
-                    }
-                })
-            })
+            sendToUnity("didRedeemLink", serializeRedemptionResult(result))
         }
 
         override fun userAttributesDidChange(newAttributes: Map<String, Any>) {
             sendToUnity("userAttributesDidChange", JSONObject().apply {
-                put("attributes", JSONObject(newAttributes))
+                put("newAttributes", JSONObject(newAttributes))
             })
         }
 
         override fun customerInfoDidChange(from: CustomerInfo, to: CustomerInfo) {
             sendToUnity("customerInfoDidChange", JSONObject().apply {
-                put("from", JSONObject().put("userId", from.userId))
-                put("to", JSONObject().put("userId", to.userId))
+                put("from", serializeCustomerInfo(from))
+                put("to", serializeCustomerInfo(to))
             })
         }
     }

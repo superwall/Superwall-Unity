@@ -136,6 +136,9 @@ namespace Superwall.Internal
 
         [DllImport("__Internal")]
         internal static extern void _SuperwallBridge_RefreshConfiguration();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetLocalResources(string resourcesJson);
     }
 #endif
 }

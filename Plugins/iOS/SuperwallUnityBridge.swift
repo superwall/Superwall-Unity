@@ -151,12 +151,105 @@ private func serializePaywallInfo(_ info: PaywallInfo) -> [String: Any] {
         "identifier": info.identifier,
         "name": info.name,
         "url": info.url.absoluteString,
-        "productIds": info.productIds
+        "productIds": info.productIds,
+        "products": info.products.map { product -> [String: Any] in
+            var p: [String: Any] = [
+                "id": product.id,
+                "entitlements": product.entitlements.map { serializeEntitlement($0) }
+            ]
+            if let name = product.name { p["name"] = name }
+            return p
+        },
+        "presentedBy": info.presentedBy,
+        "isFreeTrialAvailable": info.isFreeTrialAvailable,
+        "featureGatingBehavior": info.featureGatingBehavior == .gated ? "gated" : "nonGated",
+        "closeReason": serializePaywallCloseReason(info.closeReason),
+        "state": info.state,
+        "localNotifications": info.localNotifications.map { serializeLocalNotification($0) },
+        "computedPropertyRequests": info.computedPropertyRequests.map { serializeComputedPropertyRequest($0) },
+        "surveys": info.surveys.map { serializeSurvey($0) }
     ]
+    if let name = info.presentedByPlacementWithName { dict["presentedByPlacementWithName"] = name }
+    if let id = info.presentedByPlacementWithId { dict["presentedByPlacementWithId"] = id }
+    if let at = info.presentedByPlacementAt { dict["presentedByPlacementAt"] = at }
+    if let src = info.presentationSourceType { dict["presentationSourceType"] = src }
+    if let v = info.paywalljsVersion { dict["paywalljsVersion"] = v }
+    if let s = info.responseLoadStartTime { dict["responseLoadStartTime"] = s }
+    if let s = info.responseLoadCompleteTime { dict["responseLoadCompleteTime"] = s }
+    if let s = info.responseLoadFailTime { dict["responseLoadFailTime"] = s }
+    if let d = info.responseLoadDuration { dict["responseLoadDuration"] = d }
+    if let s = info.webViewLoadStartTime { dict["webViewLoadStartTime"] = s }
+    if let s = info.webViewLoadCompleteTime { dict["webViewLoadCompleteTime"] = s }
+    if let s = info.webViewLoadFailTime { dict["webViewLoadFailTime"] = s }
+    if let d = info.webViewLoadDuration { dict["webViewLoadDuration"] = d }
+    if let s = info.productsLoadStartTime { dict["productsLoadStartTime"] = s }
+    if let s = info.productsLoadCompleteTime { dict["productsLoadCompleteTime"] = s }
+    if let s = info.productsLoadFailTime { dict["productsLoadFailTime"] = s }
+    if let d = info.productsLoadDuration { dict["productsLoadDuration"] = d }
     if let experiment = info.experiment {
         dict["experiment"] = serializeExperiment(experiment)
     }
     return dict
+}
+
+private func serializePaywallCloseReason(_ reason: PaywallCloseReason) -> String {
+    switch reason {
+    case .systemLogic: return "systemLogic"
+    case .forNextPaywall: return "forNextPaywall"
+    case .webViewFailedToLoad: return "webViewFailedToLoad"
+    case .manualClose: return "manualClose"
+    case .none: return "none"
+    @unknown default: return "none"
+    }
+}
+
+private func serializeLocalNotification(_ n: LocalNotification) -> [String: Any] {
+    var dict: [String: Any] = [
+        "id": n.id,
+        "type": n.type == .trialStarted ? "trialStarted" : "unsupported",
+        "title": n.title,
+        "body": n.body,
+        "delay": n.delay
+    ]
+    if let s = n.subtitle { dict["subtitle"] = s }
+    return dict
+}
+
+private func serializeComputedPropertyRequest(_ c: ComputedPropertyRequest) -> [String: Any] {
+    let typeStr: String
+    switch c.type {
+    case .minutesSince: typeStr = "minutesSince"
+    case .hoursSince: typeStr = "hoursSince"
+    case .daysSince: typeStr = "daysSince"
+    case .monthsSince: typeStr = "monthsSince"
+    case .yearsSince: typeStr = "yearsSince"
+    case .placementsInHour: typeStr = "placementsInHour"
+    case .placementsInDay: typeStr = "placementsInDay"
+    case .placementsInWeek: typeStr = "placementsInWeek"
+    case .placementsInMonth: typeStr = "placementsInMonth"
+    case .placementsSinceInstall: typeStr = "placementsSinceInstall"
+    @unknown default: typeStr = "minutesSince"
+    }
+    return ["type": typeStr, "eventName": c.placementName]
+}
+
+private func serializeSurvey(_ s: Survey) -> [String: Any] {
+    let conditionStr: String
+    switch s.presentationCondition {
+    case .onManualClose: conditionStr = "onManualClose"
+    case .onPurchase: conditionStr = "onPurchase"
+    @unknown default: conditionStr = "onManualClose"
+    }
+    return [
+        "id": s.id,
+        "title": s.title,
+        "message": s.message,
+        "options": s.options.map { ["id": $0.id, "text": $0.title] },
+        "presentationCondition": conditionStr,
+        "presentationProbability": s.presentationProbability,
+        "includeOtherOption": s.includeOtherOption,
+        "includeCloseOption": s.includeCloseOption
+    ]
 }
 
 private func serializeSubscriptionStatus(_ status: SubscriptionStatus) -> [String: Any] {
@@ -951,27 +1044,71 @@ public func _SuperwallBridge_GetProducts(
 
     Task {
         let products = await Superwall.shared.products(for: Set(productIds))
-        let serialized: [[String: Any]] = products.map { product in
-            var dict: [String: Any] = [
-                "productIdentifier": product.productIdentifier,
-                "localizedPrice": product.localizedPrice,
-                "price": "\(product.price)",
-                "currencyCode": product.currencyCode ?? "",
-                "currencySymbol": product.currencySymbol ?? ""
-            ]
-            if let period = product.subscriptionPeriod {
-                dict["subscriptionPeriodUnit"] = "\(period.unit)"
-                dict["subscriptionPeriodValue"] = period.value
-            }
-            if let groupId = product.subscriptionGroupIdentifier {
-                dict["subscriptionGroupIdentifier"] = groupId
-            }
-            dict["hasFreeTrial"] = product.hasFreeTrial
-            dict["localizedSubscriptionPeriod"] = product.localizedSubscriptionPeriod
-            return dict
+        var serialized: [String: Any] = [:]
+        for product in products {
+            serialized[product.productIdentifier] = serializeStoreProduct(product)
         }
         sendAsyncResponse(callbackId: cbId, data: ["products": serialized])
     }
+}
+
+private func serializeStoreProduct(_ product: StoreProduct) -> [String: Any] {
+    var dict: [String: Any] = [
+        "productIdentifier": product.productIdentifier,
+        "localizedPrice": product.localizedPrice,
+        "localizedSubscriptionPeriod": product.localizedSubscriptionPeriod,
+        "period": product.period,
+        "periodly": product.periodly,
+        "periodDays": product.periodDays,
+        "periodDaysString": product.periodDaysString,
+        "periodWeeks": product.periodWeeks,
+        "periodWeeksString": product.periodWeeksString,
+        "periodMonths": product.periodMonths,
+        "periodMonthsString": product.periodMonthsString,
+        "periodYears": product.periodYears,
+        "periodYearsString": product.periodYearsString,
+        "dailyPrice": product.dailyPrice,
+        "weeklyPrice": product.weeklyPrice,
+        "monthlyPrice": product.monthlyPrice,
+        "yearlyPrice": product.yearlyPrice,
+        "hasFreeTrial": product.hasFreeTrial,
+        "trialPeriodEndDateString": product.trialPeriodEndDateString,
+        "localizedTrialPeriodPrice": product.localizedTrialPeriodPrice,
+        "trialPeriodPrice": NSDecimalNumber(decimal: product.trialPeriodPrice).doubleValue,
+        "trialPeriodDays": product.trialPeriodDays,
+        "trialPeriodDaysString": product.trialPeriodDaysString,
+        "trialPeriodWeeks": product.trialPeriodWeeks,
+        "trialPeriodWeeksString": product.trialPeriodWeeksString,
+        "trialPeriodMonths": product.trialPeriodMonths,
+        "trialPeriodMonthsString": product.trialPeriodMonthsString,
+        "trialPeriodYears": product.trialPeriodYears,
+        "trialPeriodYearsString": product.trialPeriodYearsString,
+        "trialPeriodText": product.trialPeriodText,
+        "locale": product.locale,
+        "isFamilyShareable": product.isFamilyShareable,
+        "price": NSDecimalNumber(decimal: product.price).doubleValue,
+        "attributes": product.attributes,
+        "entitlements": product.entitlements.map { serializeEntitlement($0) }
+    ]
+    if let groupId = product.subscriptionGroupIdentifier {
+        dict["subscriptionGroupIdentifier"] = groupId
+    }
+    if let lang = product.languageCode {
+        dict["languageCode"] = lang
+    }
+    if let currency = product.currencyCode {
+        dict["currencyCode"] = currency
+    }
+    if let symbol = product.currencySymbol {
+        dict["currencySymbol"] = symbol
+    }
+    if let region = product.regionCode {
+        dict["regionCode"] = region
+    }
+    if let endDate = product.trialPeriodEndDate {
+        dict["trialPeriodEndDate"] = ISO8601DateFormatter().string(from: endDate)
+    }
+    return dict
 }
 
 @_cdecl("_SuperwallBridge_GetAssignments")
@@ -1059,4 +1196,27 @@ public func _SuperwallBridge_ShowAlert(
     // No-op on iOS — SuperwallKit does not expose a showAlert API.
     // This stub exists to prevent a crash from the missing DllImport symbol.
     NSLog("[SuperwallUnityBridge] ShowAlert called (no-op on iOS)")
+}
+
+@_cdecl("_SuperwallBridge_SetLocalResources")
+public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CChar>) {
+    let json = String(cString: resourcesJson)
+    guard let dict = parseJson(json) else {
+        Superwall.shared.options.localResources = [:]
+        return
+    }
+    var resources: [String: URL] = [:]
+    for (key, value) in dict {
+        guard let path = value as? String, !path.isEmpty else { continue }
+        let url: URL?
+        if let parsed = URL(string: path), parsed.scheme != nil {
+            url = parsed
+        } else {
+            url = URL(fileURLWithPath: path)
+        }
+        if let url = url {
+            resources[key] = url
+        }
+    }
+    Superwall.shared.options.localResources = resources
 }

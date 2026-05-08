@@ -331,6 +331,17 @@ namespace Superwall.Internal
             if (productIdsList != null)
                 info.ProductIds = productIdsList.Select(p => p?.ToString()).Where(p => p != null).ToList();
 
+            var productsList = GetList(data, "products");
+            if (productsList != null)
+            {
+                info.Products = new List<Product>();
+                foreach (var item in productsList)
+                {
+                    if (item is Dictionary<string, object> pDict)
+                        info.Products.Add(DeserializeProduct(pDict));
+                }
+            }
+
             var experimentDict = GetDict(data, "experiment");
             if (experimentDict != null)
                 info.Experiment = DeserializeExperiment(experimentDict);
@@ -342,8 +353,19 @@ namespace Superwall.Internal
             info.PresentationSourceType = GetString(data, "presentationSourceType");
             info.PaywalljsVersion = GetString(data, "paywalljsVersion");
 
+            info.ResponseLoadStartTime = GetString(data, "responseLoadStartTime");
+            info.ResponseLoadCompleteTime = GetString(data, "responseLoadCompleteTime");
+            info.ResponseLoadFailTime = GetString(data, "responseLoadFailTime");
             info.ResponseLoadDuration = GetDoubleNullable(data, "responseLoadDuration");
+
+            info.WebViewLoadStartTime = GetString(data, "webViewLoadStartTime");
+            info.WebViewLoadCompleteTime = GetString(data, "webViewLoadCompleteTime");
+            info.WebViewLoadFailTime = GetString(data, "webViewLoadFailTime");
             info.WebViewLoadDuration = GetDoubleNullable(data, "webViewLoadDuration");
+
+            info.ProductsLoadStartTime = GetString(data, "productsLoadStartTime");
+            info.ProductsLoadCompleteTime = GetString(data, "productsLoadCompleteTime");
+            info.ProductsLoadFailTime = GetString(data, "productsLoadFailTime");
             info.ProductsLoadDuration = GetDoubleNullable(data, "productsLoadDuration");
 
             if (data.ContainsKey("isFreeTrialAvailable") && data["isFreeTrialAvailable"] != null)
@@ -355,7 +377,114 @@ namespace Superwall.Internal
             var closeReasonStr = GetString(data, "closeReason");
             info.CloseReason = ParseEnum<PaywallCloseReason>(closeReasonStr);
 
+            var localNotifList = GetList(data, "localNotifications");
+            if (localNotifList != null)
+            {
+                info.LocalNotifications = new List<LocalNotification>();
+                foreach (var item in localNotifList)
+                {
+                    if (item is Dictionary<string, object> nDict)
+                        info.LocalNotifications.Add(DeserializeLocalNotification(nDict));
+                }
+            }
+
+            var computedList = GetList(data, "computedPropertyRequests");
+            if (computedList != null)
+            {
+                info.ComputedPropertyRequests = new List<ComputedPropertyRequest>();
+                foreach (var item in computedList)
+                {
+                    if (item is Dictionary<string, object> cDict)
+                        info.ComputedPropertyRequests.Add(DeserializeComputedPropertyRequest(cDict));
+                }
+            }
+
+            var surveysList = GetList(data, "surveys");
+            if (surveysList != null)
+            {
+                info.Surveys = new List<Survey>();
+                foreach (var item in surveysList)
+                {
+                    if (item is Dictionary<string, object> sDict)
+                        info.Surveys.Add(DeserializeSurvey(sDict));
+                }
+            }
+
+            info.State = GetDict(data, "state");
+
             return info;
+        }
+
+        private static Product DeserializeProduct(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var p = new Product();
+            p.Id = GetString(data, "id");
+            p.Name = GetString(data, "name");
+            var entList = GetList(data, "entitlements");
+            if (entList != null)
+            {
+                p.Entitlements = new List<Entitlement>();
+                foreach (var item in entList)
+                {
+                    if (item is Dictionary<string, object> eDict)
+                        p.Entitlements.Add(DeserializeEntitlement(eDict));
+                }
+            }
+            return p;
+        }
+
+        private static LocalNotification DeserializeLocalNotification(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var n = new LocalNotification();
+            n.Id = GetString(data, "id");
+            n.Type = ParseEnum<LocalNotificationType>(GetString(data, "type")) ?? LocalNotificationType.Unsupported;
+            n.Title = GetString(data, "title");
+            n.Subtitle = GetString(data, "subtitle");
+            n.Body = GetString(data, "body");
+            n.Delay = GetIntNullable(data, "delay") ?? 0;
+            return n;
+        }
+
+        private static ComputedPropertyRequest DeserializeComputedPropertyRequest(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var c = new ComputedPropertyRequest();
+            c.Type = ParseEnum<ComputedPropertyRequestType>(GetString(data, "type")) ?? ComputedPropertyRequestType.MinutesSince;
+            c.EventName = GetString(data, "eventName");
+            return c;
+        }
+
+        private static Survey DeserializeSurvey(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var s = new Survey();
+            s.Id = GetString(data, "id");
+            s.AssignmentKey = GetString(data, "assignmentKey");
+            s.Title = GetString(data, "title");
+            s.Message = GetString(data, "message");
+            s.PresentationCondition = ParseEnum<SurveyShowCondition>(GetString(data, "presentationCondition")) ?? SurveyShowCondition.OnManualClose;
+            s.PresentationProbability = GetDoubleNullable(data, "presentationProbability") ?? 0;
+            s.IncludeOtherOption = GetBool(data, "includeOtherOption");
+            s.IncludeCloseOption = GetBool(data, "includeCloseOption");
+            var optsList = GetList(data, "options");
+            if (optsList != null)
+            {
+                s.Options = new List<SurveyOption>();
+                foreach (var item in optsList)
+                {
+                    if (item is Dictionary<string, object> oDict)
+                    {
+                        s.Options.Add(new SurveyOption
+                        {
+                            Id = GetString(oDict, "id"),
+                            Text = GetString(oDict, "text")
+                        });
+                    }
+                }
+            }
+            return s;
         }
 
         private static Experiment DeserializeExperiment(Dictionary<string, object> data)

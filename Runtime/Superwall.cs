@@ -1341,7 +1341,7 @@ namespace Superwall
         private static void CallNative_SetLocalResources(string resourcesJson)
         {
 #if UNITY_IOS && !UNITY_EDITOR
-            // Not supported on iOS
+            SuperwallBridgeiOS._SuperwallBridge_SetLocalResources(resourcesJson);
 #elif UNITY_ANDROID && !UNITY_EDITOR
             SuperwallBridgeAndroid.SetLocalResources(resourcesJson);
 #else
