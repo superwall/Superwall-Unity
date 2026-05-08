@@ -8,6 +8,9 @@ import com.superwall.sdk.config.options.SuperwallOptions
 import com.superwall.sdk.delegate.SuperwallDelegate
 import com.superwall.sdk.delegate.PurchaseResult
 import com.superwall.sdk.delegate.RestorationResult
+import com.superwall.sdk.delegate.subscription_controller.PurchaseController
+import com.android.billingclient.api.ProductDetails
+import kotlinx.coroutines.CompletableDeferred
 import com.superwall.sdk.identity.IdentityOptions
 import com.superwall.sdk.identity.identify
 import com.superwall.sdk.identity.setUserAttributes
@@ -38,6 +41,7 @@ class SuperwallUnityBridge {
 
     companion object {
         private var unityDelegate: SuperwallUnityDelegateImpl? = null
+        private var unityPurchaseController: UnityPurchaseController? = null
         private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
         private fun sendToUnity(method: String, data: JSONObject) {
@@ -75,7 +79,14 @@ class SuperwallUnityBridge {
             override fun getCurrentActivity(): Activity? = UnityPlayer.currentActivity
         }
 
-        Superwall.configure(activity.application, apiKey, options = options, activityProvider = unityActivityProvider) { result ->
+        val purchaseController: PurchaseController? = if (hasPurchaseController) {
+            UnityPurchaseController().also { unityPurchaseController = it }
+        } else {
+            unityPurchaseController = null
+            null
+        }
+
+        Superwall.configure(activity.application, apiKey, purchaseController, options, unityActivityProvider) { result ->
             completionCallbackId?.let { cbId ->
                 val response = JSONObject()
                 result.fold(
@@ -321,8 +332,37 @@ class SuperwallUnityBridge {
     fun getOverrideProductsByName(): String? = null
     fun setOverrideProductsByName(productsJson: String?) {}
     fun consume(purchaseToken: String, callbackId: String) { sendAsyncResponse(callbackId, JSONObject().put("result", "not_implemented")) }
-    fun respondToPurchaseController(callbackId: String, resultJson: String) {}
-    fun respondToRestorePurchases(callbackId: String, resultJson: String) {}
+    fun respondToPurchaseController(callbackId: String, resultJson: String) {
+        val controller = unityPurchaseController ?: return
+        val result = try {
+            val json = JSONObject(resultJson)
+            when (json.optString("type")) {
+                "purchased" -> PurchaseResult.Purchased()
+                "cancelled" -> PurchaseResult.Cancelled()
+                "pending" -> PurchaseResult.Pending()
+                "failed" -> PurchaseResult.Failed(json.optString("error", ""))
+                else -> PurchaseResult.Failed("Unknown purchase result type")
+            }
+        } catch (e: JSONException) {
+            PurchaseResult.Failed("Invalid purchase result JSON: ${e.message}")
+        }
+        controller.completePurchase(callbackId, result)
+    }
+
+    fun respondToRestorePurchases(callbackId: String, resultJson: String) {
+        val controller = unityPurchaseController ?: return
+        val result = try {
+            val json = JSONObject(resultJson)
+            when (json.optString("type")) {
+                "restored" -> RestorationResult.Restored()
+                "failed" -> RestorationResult.Failed(Throwable(json.optString("error", "")))
+                else -> RestorationResult.Failed(Throwable("Unknown restoration result type"))
+            }
+        } catch (e: JSONException) {
+            RestorationResult.Failed(Throwable("Invalid restoration result JSON: ${e.message}"))
+        }
+        controller.completeRestore(callbackId, result)
+    }
 
     fun purchase(productId: String, callbackId: String) {
         scope.launch {
@@ -682,6 +722,61 @@ class SuperwallUnityBridge {
                 put("from", JSONObject().put("userId", from.userId))
                 put("to", JSONObject().put("userId", to.userId))
             })
+        }
+    }
+
+    private class UnityPurchaseController : PurchaseController {
+        private val pendingPurchases = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<PurchaseResult>>()
+        private val pendingRestores = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<RestorationResult>>()
+
+        override suspend fun purchase(
+            activity: Activity,
+            productDetails: ProductDetails,
+            basePlanId: String?,
+            offerId: String?
+        ): PurchaseResult {
+            val callbackId = java.util.UUID.randomUUID().toString()
+            val deferred = CompletableDeferred<PurchaseResult>()
+            pendingPurchases[callbackId] = deferred
+
+            sendToUnity("purchaseFromGooglePlay", JSONObject().apply {
+                put("productId", productDetails.productId)
+                put("basePlanId", basePlanId ?: "")
+                put("offerId", offerId ?: "")
+                put("callbackId", callbackId)
+            })
+
+            return try {
+                deferred.await()
+            } catch (t: Throwable) {
+                pendingPurchases.remove(callbackId)
+                PurchaseResult.Failed(t.message ?: "Purchase cancelled")
+            }
+        }
+
+        override suspend fun restorePurchases(): RestorationResult {
+            val callbackId = java.util.UUID.randomUUID().toString()
+            val deferred = CompletableDeferred<RestorationResult>()
+            pendingRestores[callbackId] = deferred
+
+            sendToUnity("restorePurchases", JSONObject().apply {
+                put("callbackId", callbackId)
+            })
+
+            return try {
+                deferred.await()
+            } catch (t: Throwable) {
+                pendingRestores.remove(callbackId)
+                RestorationResult.Failed(t)
+            }
+        }
+
+        fun completePurchase(callbackId: String, result: PurchaseResult) {
+            pendingPurchases.remove(callbackId)?.complete(result)
+        }
+
+        fun completeRestore(callbackId: String, result: RestorationResult) {
+            pendingRestores.remove(callbackId)?.complete(result)
         }
     }
 }

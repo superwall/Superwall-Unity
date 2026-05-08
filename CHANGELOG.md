@@ -3,6 +3,11 @@ All notable changes to this package will be documented in this file.
 
 ## [0.2.3]
 
+### Android Purchase Controller
+* Android purchase controller parity with the iOS purchase controller flow
+
+## [0.2.2]
+
 ### Breaking Changes
 * `Configure` completion signature changed from `Action<bool>` to `Action<ConfigurationResult>` to match the native SDKs' `Result<Unit>` semantics. The result exposes `IsSuccess` and a typed `FailedResult.Error` on failure. Android now propagates SDK init errors through this; iOS still always signals success since SuperwallKit's completion has no failure variant.
 
