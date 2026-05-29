@@ -1,0 +1,21 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.5.2'
+        classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.0.21'
+    }
+}
+
+// Inject the Unity stub jar as a compileOnly dep into the real :SuperwallSDK module
+// so its `import com.unity3d.player.UnityPlayer` resolves outside a Unity build.
+gradle.projectsEvaluated {
+    def sdk = rootProject.findProject(':SuperwallSDK')
+    if (sdk != null) {
+        sdk.dependencies {
+            compileOnly project(':unity-stub')
+        }
+    }
+}

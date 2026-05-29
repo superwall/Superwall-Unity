@@ -1051,8 +1051,16 @@ namespace Superwall.Internal
             var callback = _pendingAsyncCallbacks[callbackId];
             _pendingAsyncCallbacks.Remove(callbackId);
 
-            var responseData = data.ContainsKey("response") ? data["response"] as string : null;
-            callback?.Invoke(responseData);
+            // Native bridges flatten the response fields directly into `data` alongside `callbackId`.
+            // Re-serialize the whole dict (sans callbackId) so the registered callback can parse it.
+            string json = null;
+            if (data != null)
+            {
+                var payload = new Dictionary<string, object>(data);
+                payload.Remove("callbackId");
+                json = Json.Serialize(payload);
+            }
+            callback?.Invoke(json);
         }
 
         #endregion

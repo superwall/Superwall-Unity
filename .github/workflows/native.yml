@@ -1,0 +1,55 @@
+name: native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS bridge (SPM)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: ci~/ios-harness/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('ci~/ios-harness/Package.swift') }}
+          restore-keys: spm-${{ runner.os }}-
+
+      - name: swift build
+        working-directory: ci~/ios-harness
+        run: swift build -c release
+
+  android:
+    name: Android lib (Gradle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: assembleRelease
+        working-directory: ci~/android-harness
+        run: gradle :SuperwallSDK:assembleRelease --no-daemon --stacktrace

@@ -205,7 +205,6 @@ private func serializePaywallCloseReason(_ reason: PaywallCloseReason) -> String
 
 private func serializeLocalNotification(_ n: LocalNotification) -> [String: Any] {
     var dict: [String: Any] = [
-        "id": n.id,
         "type": n.type == .trialStarted ? "trialStarted" : "unsupported",
         "title": n.title,
         "body": n.body,
@@ -445,6 +444,8 @@ private class UnityPurchaseController: PurchaseController {
 private var unityDelegate: SuperwallUnityDelegate?
 private var unityPurchaseController: UnityPurchaseController?
 private var pendingFeatureHandlers: [String: () -> Void] = [:]
+private var pendingLocalResources: [String: URL] = [:]
+private var didConfigure = false
 
 // MARK: - Extern C Functions
 
@@ -574,12 +575,20 @@ public func _SuperwallBridge_Configure(
         purchaseController = controller
     }
 
+    if !pendingLocalResources.isEmpty {
+        if options == nil { options = SuperwallOptions() }
+        var resourceMap: [String: AssetResource] = [:]
+        for (k, v) in pendingLocalResources { resourceMap[k] = v }
+        options?.localResources = resourceMap
+    }
+
     let completion: (() -> Void)? = callbackId.map { cbId in
         return {
             sendAsyncResponse(callbackId: cbId, data: ["success": true])
         }
     }
 
+    didConfigure = true
     _ = Superwall.configure(apiKey: key, purchaseController: purchaseController, options: options, completion: completion)
 }
 
@@ -1188,21 +1197,22 @@ public func _SuperwallBridge_RespondToRestorePurchases(_ callbackId: UnsafePoint
 }
 
 @_cdecl("_SuperwallBridge_ShowAlert")
-public func _SuperwallBridge_ShowAlert(
-    _ titlePtr: UnsafePointer<CChar>?,
-    _ messagePtr: UnsafePointer<CChar>?,
-    _ actionTitlePtr: UnsafePointer<CChar>?
-) {
-    // No-op on iOS — SuperwallKit does not expose a showAlert API.
-    // This stub exists to prevent a crash from the missing DllImport symbol.
+public func _SuperwallBridge_ShowAlert(_ alertJson: UnsafePointer<CChar>?) {
+    // SuperwallKit (iOS) does not expose a public showAlert API. The bridge accepts the
+    // call so the DllImport symbol resolves, logs a warning, then fires the close
+    // callback immediately so the C# side cleans up its pending callback entry.
     NSLog("[SuperwallUnityBridge] ShowAlert called (no-op on iOS)")
+    guard let json = toSwiftString(alertJson), let dict = parseJson(json) else { return }
+    if let closeId = dict["onCloseCallbackId"] as? String {
+        sendAsyncResponse(callbackId: closeId, data: ["action": "closed"])
+    }
 }
 
 @_cdecl("_SuperwallBridge_SetLocalResources")
 public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CChar>) {
     let json = String(cString: resourcesJson)
     guard let dict = parseJson(json) else {
-        Superwall.shared.options.localResources = [:]
+        pendingLocalResources = [:]
         return
     }
     var resources: [String: URL] = [:]
@@ -1218,5 +1228,8 @@ public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CC
             resources[key] = url
         }
     }
-    Superwall.shared.options.localResources = resources
+    pendingLocalResources = resources
+    if didConfigure {
+        NSLog("[SuperwallUnityBridge] SetLocalResources called after Configure — on iOS, local resources must be set before Configure or they will not be picked up.")
+    }
 }
