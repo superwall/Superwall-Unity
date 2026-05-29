@@ -20,16 +20,23 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app
 
-      - name: Cache SPM
+      - name: Cache SPM + DerivedData
         uses: actions/cache@v4
         with:
           path: ci~/ios-harness/.build
-          key: spm-${{ runner.os }}-${{ hashFiles('ci~/ios-harness/Package.swift') }}
-          restore-keys: spm-${{ runner.os }}-
+          key: xcb-ios-${{ runner.os }}-${{ hashFiles('ci~/ios-harness/Package.swift') }}
+          restore-keys: xcb-ios-${{ runner.os }}-
 
-      - name: swift build
+      - name: xcodebuild (iOS SDK)
         working-directory: ci~/ios-harness
-        run: swift build -c release
+        # swift build would target the macOS SDK and fail on UIKit imports inside
+        # SuperwallKit. xcodebuild with an iOS destination picks the iOS SDK.
+        run: |
+          xcodebuild build \
+            -scheme SuperwallBridgeHarness \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath .build \
+            -skipPackagePluginValidation
 
   android:
     name: Android lib (Gradle)
