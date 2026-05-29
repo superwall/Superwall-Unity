@@ -13,12 +13,14 @@ concurrency:
 jobs:
   ios:
     name: iOS bridge (SPM)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - name: Show Xcode + iOS SDK
+        # Float with whatever Xcode the macos-15 image ships (currently 16.x);
+        # SuperwallKit 4.15+ won't compile on Xcode 15.4.
+        run: xcodebuild -version && xcodebuild -showsdks | grep -i ios
 
       - name: Cache SPM + DerivedData
         uses: actions/cache@v4
