@@ -220,14 +220,26 @@ class SuperwallUnityBridge {
 
     fun setSubscriptionStatus(statusJson: String) {
         try {
-            val type = JSONObject(statusJson).optString("type", "unknown")
+            val json = JSONObject(statusJson)
+            val type = json.optString("type", "unknown")
             val status: SubscriptionStatus = when (type.lowercase()) {
-                "active" -> SubscriptionStatus.Active(emptySet())
+                "active" -> SubscriptionStatus.Active(parseEntitlementsFromJson(json.optJSONArray("entitlements")))
                 "inactive" -> SubscriptionStatus.Inactive
                 else -> SubscriptionStatus.Unknown
             }
             Superwall.instance.setSubscriptionStatus(status)
         } catch (_: JSONException) {}
+    }
+
+    private fun parseEntitlementsFromJson(arr: JSONArray?): Set<Entitlement> {
+        if (arr == null) return emptySet()
+        val out = mutableSetOf<Entitlement>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.optString("id", null) ?: o.optString("identifier", null) ?: continue
+            out.add(Entitlement(id = id))
+        }
+        return out
     }
 
     fun getConfigurationStatus(): String = when (Superwall.instance.configurationState) {
@@ -519,8 +531,8 @@ class SuperwallUnityBridge {
             val message = json.optString("message", null)
             val actionTitle = json.optString("actionTitle", null)
             val closeActionTitle = json.optString("closeActionTitle", "Done")
-            val actionCallbackId = json.optString("actionCallbackId", null)
-            val closeCallbackId = json.optString("closeCallbackId", null)
+            val actionCallbackId = json.optString("onActionCallbackId", null)
+            val closeCallbackId = json.optString("onCloseCallbackId", null)
 
             val action: (() -> Unit)? = actionCallbackId?.let {
                 { sendAsyncResponse(it, JSONObject().put("action", "performed")) }

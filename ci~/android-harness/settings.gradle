@@ -1,0 +1,24 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'superwall-android-harness'
+
+include ':unity-stub'
+
+// Mount the real Unity-shipped androidlib under a friendly name so CI builds
+// the same Gradle module that ships in the package.
+include ':SuperwallSDK'
+project(':SuperwallSDK').projectDir = file('../../Plugins/Android/SuperwallSDK.androidlib')

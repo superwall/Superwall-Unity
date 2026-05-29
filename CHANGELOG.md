@@ -1,6 +1,27 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [0.2.4]
+
+### Fixes
+* Fix configure result emitting an unknown error on success
+* iOS `_SuperwallBridge_ShowAlert` ABI mismatch (3 pointers vs C# `(string)`) — now takes a single `alertJson` string matching the C# extern. iOS additionally fires the `onCloseCallbackId` immediately so the pending C# callback is cleaned up.
+* Android `showAlert` was reading `actionCallbackId` / `closeCallbackId`, but C# emits `onActionCallbackId` / `onCloseCallbackId` — alert callbacks never fired. Fixed.
+* iOS bridge: removed access to internal `Superwall.shared.options` — `SetLocalResources` now stashes the resource map and applies it via `SuperwallOptions.localResources` during `Configure` (must be called before `Configure` on iOS; logs a warning otherwise).
+* Post-build `pod install` now locates `pod` across common install paths (`/usr/local/bin`, `/opt/homebrew/bin`, rbenv/asdf shims, `which pod` under a login shell) and runs under a login shell so user PATH from `~/.zshrc`/`~/.bash_profile` is honored. Clear manual-install instructions on failure.
+* Post-build `pod install` now sets `LANG=en_US.UTF-8` and `LC_ALL=en_US.UTF-8` in the subprocess so CocoaPods no longer crashes with `Encoding::CompatibilityError` when Unity is launched from Finder (inherits launchd's empty `LANG`).
+
+### Tests
+* Added `Tests/Runtime/BridgeContractTests.cs` covering the async-response contract, Configure success/failure paths, and the delegate/handler payload shapes for the regressions fixed in this release.
+
+### CI
+* Added `.github/workflows/native.yml` — builds the iOS Swift bridge via SPM on macOS and the Android `.androidlib` via Gradle on Ubuntu, on every push and PR. No Unity license required.
+* Added parked `.github/workflows/unity.yml` for full game-ci Unity build + test runs, documented with the licensing secrets and wrapping-project steps needed to enable it.
+* CI harness scaffolding lives under `ci~/` (tilde-suffixed so Unity ignores it during package import — never copied into player builds).
+
+### Compatibility
+* Minimum Unity version lowered from `6000.4` to `6000.3`.
+
 ## [0.2.3]
 
 ## Enhancements

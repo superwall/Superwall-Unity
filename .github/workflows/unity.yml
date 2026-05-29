@@ -1,0 +1,101 @@
+# Parked: full Unity build + test pipeline.
+#
+# This repo is the UPM package only — there is no Assets/ or ProjectSettings/
+# here, so a Unity build needs a wrapping test project. Two ways to wire that:
+#
+#   1. Clone a separate Superwall-Unity-TestApp repo into ./_test-project, then
+#      replace its Packages/com.superwall.sdk/ with the current checkout (rsync
+#      or a symlink) before invoking game-ci.
+#   2. Commit a minimal wrapping project to this repo under ./_test-project
+#      (only Assets/, ProjectSettings/, Packages/manifest.json) and reference
+#      com.superwall.sdk via a "file:.." path in manifest.json.
+#
+# Required secrets (https://game.ci/docs/github/activation):
+#   UNITY_LICENSE   - contents of the .ulf produced by manual activation
+#   UNITY_EMAIL     - Unity account email
+#   UNITY_PASSWORD  - Unity account password
+#
+# To enable: implement the wrapping project step below, add the triggers you
+# want (push / pull_request), and verify the unityVersion image exists on
+# https://hub.docker.com/r/unityci/editor/tags for the editor pinned in the
+# test project's ProjectSettings/ProjectVersion.txt.
+
+name: unity
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: unity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: EditMode + PlayMode tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # TODO: materialize the wrapping Unity project at ./_test-project here
+      # (clone or rsync), then point projectPath: _test-project on the steps below.
+
+      - uses: actions/cache@v4
+        with:
+          path: _test-project/Library
+          key: Library-test-${{ hashFiles('_test-project/Assets/**', '_test-project/Packages/**', '_test-project/ProjectSettings/**', '**/*.cs', 'Plugins/**') }}
+          restore-keys: Library-test-
+
+      - uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: _test-project
+          unityVersion: auto
+          testMode: all
+          githubToken: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: Build ${{ matrix.targetPlatform }}
+    runs-on: ${{ matrix.os }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - targetPlatform: Android
+            os: ubuntu-latest
+          - targetPlatform: iOS
+            os: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # TODO: same wrapping-project step as above.
+
+      - uses: actions/cache@v4
+        with:
+          path: _test-project/Library
+          key: Library-${{ matrix.targetPlatform }}-${{ hashFiles('_test-project/Assets/**', '_test-project/Packages/**', '_test-project/ProjectSettings/**', '**/*.cs', 'Plugins/**') }}
+          restore-keys: |
+            Library-${{ matrix.targetPlatform }}-
+            Library-
+
+      - uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: _test-project
+          unityVersion: auto
+          targetPlatform: ${{ matrix.targetPlatform }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.targetPlatform }}
+          path: _test-project/build/${{ matrix.targetPlatform }}

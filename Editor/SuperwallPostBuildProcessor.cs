@@ -97,26 +97,100 @@ end
 
             project.WriteToFile(projPath);
 
-            // Auto-run pod install
+            RunPodInstall(buildPath);
+        }
+
+        private static void RunPodInstall(string buildPath)
+        {
+            string podPath = LocatePodExecutable();
+            if (podPath == null)
+            {
+                Debug.LogWarning(
+                    "[Superwall] Could not locate the CocoaPods 'pod' executable. " +
+                    $"Run manually:\n\n    cd \"{buildPath}\" && pod install\n\n" +
+                    "If you don't have CocoaPods installed: 'sudo gem install cocoapods' " +
+                    "or 'brew install cocoapods'.");
+                return;
+            }
+
             var process = new System.Diagnostics.Process();
             process.StartInfo.FileName = "/bin/bash";
-            process.StartInfo.Arguments = $"-c \"cd '{buildPath}' && pod install\"";
+            // Login shell so user PATH from ~/.zshrc / ~/.bash_profile is loaded (rbenv/asdf shims, Homebrew).
+            process.StartInfo.Arguments = $"-l -c \"cd '{buildPath}' && '{podPath}' install\"";
             process.StartInfo.UseShellExecute = false;
             process.StartInfo.RedirectStandardOutput = true;
             process.StartInfo.RedirectStandardError = true;
-            process.Start();
-            string output = process.StandardOutput.ReadToEnd();
-            string error = process.StandardError.ReadToEnd();
-            process.WaitForExit();
+            // Some Ruby installs (rbenv/asdf) misbehave when these env vars are inherited from Unity.
+            process.StartInfo.EnvironmentVariables.Remove("MONO_PATH");
+            process.StartInfo.EnvironmentVariables.Remove("MONO_CFG_DIR");
+            process.StartInfo.EnvironmentVariables.Remove("DYLD_FALLBACK_LIBRARY_PATH");
+            process.StartInfo.EnvironmentVariables.Remove("DYLD_LIBRARY_PATH");
+            // CocoaPods crashes with Encoding::CompatibilityError under non-UTF-8 locales —
+            // Unity launched from Finder inherits launchd's empty LANG.
+            process.StartInfo.EnvironmentVariables["LANG"] = "en_US.UTF-8";
+            process.StartInfo.EnvironmentVariables["LC_ALL"] = "en_US.UTF-8";
 
-            if (process.ExitCode == 0)
+            try
             {
-                Debug.Log($"[Superwall] pod install completed successfully.\n{output}");
+                process.Start();
+                string output = process.StandardOutput.ReadToEnd();
+                string error = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+
+                if (process.ExitCode == 0)
+                {
+                    Debug.Log($"[Superwall] pod install completed successfully.\n{output}");
+                }
+                else
+                {
+                    Debug.LogWarning(
+                        $"[Superwall] pod install failed (exit code {process.ExitCode}). " +
+                        $"Run manually:\n\n    cd \"{buildPath}\" && pod install\n\n{error}");
+                }
             }
-            else
+            catch (System.Exception e)
             {
-                Debug.LogWarning($"[Superwall] pod install failed (exit code {process.ExitCode}). Run manually in: {buildPath}\n{error}");
+                Debug.LogWarning(
+                    $"[Superwall] Could not run pod install automatically ({e.Message}). " +
+                    $"Run manually:\n\n    cd \"{buildPath}\" && pod install");
             }
+        }
+
+        private static string LocatePodExecutable()
+        {
+            string home = System.Environment.GetEnvironmentVariable("HOME") ?? "";
+            string[] candidates =
+            {
+                "/usr/local/bin/pod",
+                "/opt/homebrew/bin/pod",
+                Path.Combine(home, ".rbenv/shims/pod"),
+                Path.Combine(home, ".asdf/shims/pod"),
+                "/usr/bin/pod",
+            };
+            foreach (var path in candidates)
+            {
+                if (!string.IsNullOrEmpty(path) && File.Exists(path)) return path;
+            }
+
+            // Fall back to `which pod` under a login shell.
+            try
+            {
+                var which = new System.Diagnostics.Process();
+                which.StartInfo.FileName = "/bin/bash";
+                which.StartInfo.Arguments = "-l -c \"command -v pod\"";
+                which.StartInfo.UseShellExecute = false;
+                which.StartInfo.RedirectStandardOutput = true;
+                which.StartInfo.RedirectStandardError = true;
+                which.Start();
+                string result = which.StandardOutput.ReadToEnd().Trim();
+                which.WaitForExit();
+                if (which.ExitCode == 0 && !string.IsNullOrEmpty(result) && File.Exists(result))
+                {
+                    return result;
+                }
+            }
+            catch { }
+            return null;
         }
 #endif
     }

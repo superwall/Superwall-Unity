@@ -1,0 +1,64 @@
+name: native
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS bridge (SPM)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode + iOS SDK
+        # Float with whatever Xcode the macos-15 image ships (currently 16.x);
+        # SuperwallKit 4.15+ won't compile on Xcode 15.4.
+        run: xcodebuild -version && xcodebuild -showsdks | grep -i ios
+
+      - name: Cache SPM + DerivedData
+        uses: actions/cache@v4
+        with:
+          path: ci~/ios-harness/.build
+          key: xcb-ios-${{ runner.os }}-${{ hashFiles('ci~/ios-harness/Package.swift') }}
+          restore-keys: xcb-ios-${{ runner.os }}-
+
+      - name: xcodebuild (iOS SDK)
+        working-directory: ci~/ios-harness
+        # swift build would target the macOS SDK and fail on UIKit imports inside
+        # SuperwallKit. xcodebuild with an iOS destination picks the iOS SDK.
+        run: |
+          xcodebuild build \
+            -scheme SuperwallBridgeHarness \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath .build \
+            -skipPackagePluginValidation
+
+  android:
+    name: Android lib (Gradle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.7'
+
+      - name: assembleRelease
+        working-directory: ci~/android-harness
+        run: gradle :SuperwallSDK:assembleRelease --no-daemon --stacktrace

@@ -1,1 +1,14 @@
 .DS_Store
+
+# CI harness build outputs — see ci~/ios-harness and ci~/android-harness.
+# (The ci~ folder is tilde-suffixed so Unity ignores it during package import.)
+ci~/ios-harness/.build/
+ci~/ios-harness/.swiftpm/
+ci~/ios-harness/Package.resolved
+ci~/android-harness/.gradle/
+ci~/android-harness/build/
+ci~/android-harness/**/build/
+ci~/android-harness/local.properties
+
+# Parked Unity workflow materializes a wrapping project here at CI time.
+_test-project/
