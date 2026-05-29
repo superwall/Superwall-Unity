@@ -6,7 +6,7 @@ This package provides a Unity C# wrapper around the native [SuperwallKit](https:
 
 ## Requirements
 
-- Unity 6+ (6000.4+)
+- Unity 6+ (6000.3+)
 - iOS 16.0+
 - Android minSdk 25+
 
