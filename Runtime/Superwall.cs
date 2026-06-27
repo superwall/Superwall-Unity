@@ -332,6 +332,18 @@ namespace Superwall
             CallNative_RegisterPlacement(placement, paramsJson, handlerId, featureId, callbackId);
         }
 
+        /// <summary>
+        /// Tracks an analytics event. This is a fire-and-forget convenience alias for
+        /// <see cref="RegisterPlacement"/> with no paywall presentation handler or feature
+        /// callback. Tracked events are queryable via Superwall's Query API.
+        /// </summary>
+        /// <param name="placement">The name of the analytics event/placement to track.</param>
+        /// <param name="parameters">Optional parameters to attach to the event.</param>
+        public void Track(string placement, Dictionary<string, object> parameters = null)
+        {
+            RegisterPlacement(placement, parameters);
+        }
+
         public void Dismiss()
         {
             CallNative_Dismiss();
