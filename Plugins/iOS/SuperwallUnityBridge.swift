@@ -17,8 +17,32 @@ private func toCString(_ str: String?) -> UnsafePointer<CChar>? {
     return UnsafePointer(strdup(str))
 }
 
+// Coerce any value JSONSerialization would reject (Swift enums/structs, URL,
+// __SwiftValue, etc.) into a JSON-legal form. JSONSerialization raises an
+// Objective-C NSException on invalid input, which `try?` cannot catch, so the
+// input must be made valid BEFORE serialization. Forwarded event params (e.g.
+// enrichment) can carry such non-JSON leaves and otherwise crash the app.
+private func sanitizeForJson(_ value: Any) -> Any {
+    switch value {
+    case let dict as [String: Any]:
+        var out = [String: Any](minimumCapacity: dict.count)
+        for (key, element) in dict {
+            out[key] = sanitizeForJson(element)
+        }
+        return out
+    case let array as [Any]:
+        return array.map { sanitizeForJson($0) }
+    case is NSNull, is NSNumber, is String:
+        return value
+    default:
+        return String(describing: value)
+    }
+}
+
 private func toJsonString(_ obj: Any) -> String? {
-    guard let data = try? JSONSerialization.data(withJSONObject: obj),
+    let sanitized = sanitizeForJson(obj)
+    guard JSONSerialization.isValidJSONObject(sanitized),
+          let data = try? JSONSerialization.data(withJSONObject: sanitized),
           let str = String(data: data, encoding: .utf8) else { return nil }
     return str
 }
