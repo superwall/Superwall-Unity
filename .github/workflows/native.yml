@@ -41,8 +41,18 @@ jobs:
             -skipPackagePluginValidation
 
   android:
-    name: Android lib (Gradle)
+    name: Android lib (AGP ${{ matrix.agp }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Unity 6000.3 ships AGP 8.x; Unity 6000.4+ ships AGP 9 (built-in Kotlin,
+        # new DSL). The androidlib must build under both.
+        include:
+          - agp: 8.5.2
+            gradle: 8.7
+          - agp: 9.0.1
+            gradle: 9.3.1
     steps:
       - uses: actions/checkout@v4
 
@@ -53,12 +63,12 @@ jobs:
 
       - uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-34 build-tools;34.0.0'
+          packages: 'platforms;android-35 build-tools;35.0.0 build-tools;36.0.0'
 
       - uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '8.7'
+          gradle-version: ${{ matrix.gradle }}
 
       - name: assembleRelease
         working-directory: ci~/android-harness
-        run: gradle :SuperwallSDK:assembleRelease --no-daemon --stacktrace
+        run: gradle :SuperwallSDK:assembleRelease -PagpVersion=${{ matrix.agp }} --no-daemon --stacktrace

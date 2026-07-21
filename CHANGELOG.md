@@ -1,6 +1,18 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [0.2.5]
+
+### Fixes
+* Android: `SuperwallSDK.androidlib` no longer hardcodes `compileSdkVersion 34` — it now inherits the host project's compile SDK from `unity.compileSdkVersion` (written into `gradle.properties` by Unity from Player Settings), with a fallback of 35. Fixes `checkReleaseAarMetadata` failures after superwall-android started requiring compileSdk 35+ via androidx.activity 1.10.1.
+* Android: `superwall-android` is now pinned to an exact version (2.7.21) instead of the floating `2.+`, so a Maven-side release can no longer break consumer builds overnight. The pin will be bumped deliberately with each Unity SDK release.
+* Android: the `kotlin-android` plugin is only applied on AGP < 9. AGP 9+ (custom gradle templates / future Unity versions) ships built-in Kotlin, and applying the external plugin there crashed Gradle evaluation (`BaseExtension` removed / duplicate `kotlin` extension). The module's build script now uses new-DSL-safe syntax and builds under both AGP 8.x and AGP 9.
+* Android: `restorePurchases` bridge callback never fired — superwall-android 2.7.x changed `restorePurchases()` to return `Result<RestorationResult>`, which the bridge still matched as a bare `RestorationResult` (both `when` branches were unreachable). Now unwrapped correctly.
+* iOS: the generated Podfile no longer hardcodes `platform :ios, '16.0'` — it honors the minimum iOS version from Player Settings (fallback 15.0), so Pods build for the same deployment target as the host app and older simulators/devices stay selectable in Xcode.
+
+### CI
+* The Android harness job is now a matrix over AGP 8.5.2/Gradle 8.7 and AGP 9.0.1/Gradle 9.3.1, with the harness AGP version parameterized via `-PagpVersion`.
+
 ## [0.2.4]
 
 ### Fixes

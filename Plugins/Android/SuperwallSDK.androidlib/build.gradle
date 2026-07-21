@@ -4,35 +4,46 @@ buildscript {
         mavenCentral()
     }
     dependencies {
+        // Only used on AGP < 9 (see below); harmless on the classpath otherwise.
         classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.0.21'
     }
 }
 
 apply plugin: 'com.android.library'
-apply plugin: 'kotlin-android'
+
+// AGP 9+ compiles Kotlin natively (built-in Kotlin) and the external
+// kotlin-android plugin is incompatible with its new DSL — applying it there
+// crashes Gradle evaluation. Only apply it on older AGP versions.
+def agpMajor = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize('.')[0] as int
+if (agpMajor < 9) {
+    apply plugin: 'kotlin-android'
+}
+
+// Follow the host project's compile SDK (Unity writes unity.compileSdkVersion
+// into the exported project's gradle.properties from Player Settings) so this
+// module never pins consumers to a stale SDK. superwall-android 2.7.21 pulls
+// androidx.activity 1.10.1, which requires compileSdk >= 35 — hence the fallback.
+def unityCompileSdk = (findProperty('unity.compileSdkVersion') ?: '35') as int
 
 android {
-    namespace 'com.superwall.sdk.unity'
-    compileSdkVersion 34
+    namespace = 'com.superwall.sdk.unity'
+    compileSdk = unityCompileSdk
 
     defaultConfig {
-        minSdkVersion 25
-        targetSdkVersion 34
+        minSdk = 25
     }
 
-    sourceSets {
-        main {
-            manifest.srcFile 'src/main/AndroidManifest.xml'
+    if (agpMajor < 9) {
+        kotlinOptions {
+            jvmTarget = '1.8'
         }
-    }
-
-    kotlinOptions {
-        jvmTarget = '1.8'
     }
 }
 
 dependencies {
-    api 'com.superwall.sdk:superwall-android:2.+'
+    // Pinned exactly: a floating range (2.+) lets a Maven-side release break
+    // consumer builds overnight. Bump deliberately with each Unity SDK release.
+    api 'com.superwall.sdk:superwall-android:2.7.21'
     api 'com.android.billingclient:billing:8.0.0'
     implementation 'com.google.android.material:material:1.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'

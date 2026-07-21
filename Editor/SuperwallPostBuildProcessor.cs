@@ -28,9 +28,15 @@ namespace Superwall.Editor
         {
             string podfilePath = Path.Combine(buildPath, "Podfile");
 
+            // Honor the deployment target Unity is set to (PlayerSettings → Other Settings → Target minimum iOS Version)
+            // so the Pods build for the same iOS version as the host app — otherwise older sims/devices vanish
+            // from Xcode's destination list. SuperwallKit 4.x supports iOS 13+, so anything Unity allows is fine.
+            string iosTarget = PlayerSettings.iOS.targetOSVersionString;
+            if (string.IsNullOrEmpty(iosTarget)) iosTarget = "15.0";
+
             if (!File.Exists(podfilePath))
             {
-                string podfileContent = @"platform :ios, '16.0'
+                string podfileContent = $@"platform :ios, '{iosTarget}'
 use_frameworks!
 
 target 'UnityFramework' do
@@ -43,7 +49,7 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '{iosTarget}'
     end
   end
 end

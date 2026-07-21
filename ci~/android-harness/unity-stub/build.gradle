@@ -3,11 +3,11 @@ plugins {
 }
 
 android {
-    namespace 'com.unity3d.player.stub'
-    compileSdkVersion 34
+    namespace = 'com.unity3d.player.stub'
+    compileSdk = (findProperty('unity.compileSdkVersion') ?: '35') as int
 
     defaultConfig {
-        minSdkVersion 25
+        minSdk = 25
     }
 
     compileOptions {

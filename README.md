@@ -8,7 +8,7 @@ This package provides a Unity C# wrapper around the native [SuperwallKit](https:
 
 - Unity 6+ (6000.3+)
 - iOS 16.0+
-- Android minSdk 25+
+- Android minSdk 25+, compileSdk 35+ (set **Target API Level** to 35 or higher in Player Settings)
 
 ## Installation
 
@@ -22,7 +22,7 @@ https://github.com/superwall/Superwall-Unity.git
 
 **iOS** — The post-build processor automatically creates a Podfile and runs `pod install`. Requires [CocoaPods](https://cocoapods.org/).
 
-**Android** — No manual setup needed. The package includes a Gradle library module that automatically pulls the Superwall Android SDK and billing dependencies from Maven.
+**Android** — No manual setup needed. The package includes a Gradle library module that automatically pulls the Superwall Android SDK (pinned per release) and billing dependencies from Maven. The module inherits the compile SDK from your Player Settings and builds under both AGP 8.x (Unity 6000.3) and AGP 9+ (Unity 6000.4+).
 
 ## Quick Start
 

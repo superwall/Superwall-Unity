@@ -4,7 +4,9 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.5.2'
+        // Overridable so CI can build the androidlib under both AGP 8.x and 9.x
+        // (Unity 6000.3 ships AGP 8.x; 6000.4+ ships AGP 9).
+        classpath "com.android.tools.build:gradle:${findProperty('agpVersion') ?: '8.5.2'}"
         classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:2.0.21'
     }
 }

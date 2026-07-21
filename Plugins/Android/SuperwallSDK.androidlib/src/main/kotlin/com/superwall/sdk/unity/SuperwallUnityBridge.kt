@@ -379,7 +379,8 @@ class SuperwallUnityBridge {
 
     fun restorePurchases(callbackId: String) {
         scope.launch {
-            val result = Superwall.instance.restorePurchases()
+            // restorePurchases() returns Result<RestorationResult> since superwall-android 2.7.x
+            val result = Superwall.instance.restorePurchases().getOrElse { RestorationResult.Failed(it) }
             when (result) {
                 is RestorationResult.Restored -> sendAsyncResponse(callbackId, JSONObject().put("type", "restored"))
                 is RestorationResult.Failed -> sendAsyncResponse(callbackId, JSONObject().put("type", "failed").put("error", result.error?.message ?: ""))
