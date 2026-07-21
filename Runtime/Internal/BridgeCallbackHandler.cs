@@ -254,7 +254,7 @@ namespace Superwall.Internal
             return null;
         }
 
-        private static SubscriptionStatus DeserializeSubscriptionStatus(Dictionary<string, object> data)
+        internal static SubscriptionStatus DeserializeSubscriptionStatus(Dictionary<string, object> data)
         {
             if (data == null) return SubscriptionStatus.CreateUnknown();
 

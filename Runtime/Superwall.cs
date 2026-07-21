@@ -229,14 +229,9 @@ namespace Superwall
                 if (!string.IsNullOrEmpty(json))
                 {
                     var dict = Json.Deserialize(json) as Dictionary<string, object>;
-                    if (dict != null && dict.ContainsKey("type"))
+                    if (dict != null)
                     {
-                        string type = dict["type"] as string;
-                        switch (type)
-                        {
-                            case "active": return SubscriptionStatus.CreateActive(new System.Collections.Generic.List<Entitlement>());
-                            case "inactive": return SubscriptionStatus.CreateInactive();
-                        }
+                        return BridgeCallbackHandler.DeserializeSubscriptionStatus(dict);
                     }
                 }
                 return SubscriptionStatus.CreateUnknown();
@@ -244,7 +239,17 @@ namespace Superwall
             set
             {
                 var data = new Dictionary<string, object>();
-                data["type"] = value.Type.ToString();
+                data["type"] = value.Type.ToString().ToLowerInvariant();
+                if (value is SubscriptionStatus.ActiveStatus active && active.Entitlements != null)
+                {
+                    var entitlements = new List<object>();
+                    foreach (var entitlement in active.Entitlements)
+                    {
+                        if (entitlement == null || !entitlement.IsActive || string.IsNullOrEmpty(entitlement.Id)) continue;
+                        entitlements.Add(new Dictionary<string, object> { { "id", entitlement.Id } });
+                    }
+                    data["entitlements"] = entitlements;
+                }
                 CallNative_SetSubscriptionStatus(Json.Serialize(data));
             }
         }
