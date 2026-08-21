@@ -13,6 +13,12 @@ namespace Superwall.Editor
     {
         public int callbackOrder => 99;
 
+#if UNITY_IOS
+        private const string PackageRepositoryURL = "https://github.com/superwall/Superwall-iOS";
+        private const string PackageMinimumVersion = "4.0.0";
+        private const string PackageProductName = "SuperwallKit";
+#endif
+
         public void OnPostprocessBuild(BuildReport report)
         {
 #if UNITY_IOS
@@ -26,69 +32,26 @@ namespace Superwall.Editor
 #if UNITY_IOS
         private static void PostProcessIOS(string buildPath)
         {
-            string podfilePath = Path.Combine(buildPath, "Podfile");
+            RemoveLegacyPodDependency(buildPath);
 
-            // Honor the deployment target Unity is set to (PlayerSettings → Other Settings → Target minimum iOS Version)
-            // so the Pods build for the same iOS version as the host app — otherwise older sims/devices vanish
-            // from Xcode's destination list. SuperwallKit 4.x supports iOS 13+, so anything Unity allows is fine.
-            string iosTarget = PlayerSettings.iOS.targetOSVersionString;
-            if (string.IsNullOrEmpty(iosTarget)) iosTarget = "15.0";
-
-            if (!File.Exists(podfilePath))
-            {
-                string podfileContent = $@"platform :ios, '{iosTarget}'
-use_frameworks!
-
-target 'UnityFramework' do
-  pod 'SuperwallKit', '~> 4.0'
-end
-
-target 'Unity-iPhone' do
-end
-
-post_install do |installer|
-  installer.pods_project.targets.each do |target|
-    target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '{iosTarget}'
-    end
-  end
-end
-";
-                File.WriteAllText(podfilePath, podfileContent);
-                Debug.Log("[Superwall] Created Podfile with SuperwallKit dependency");
-            }
-            else
-            {
-                string podfileContent = File.ReadAllText(podfilePath);
-                if (!podfileContent.Contains("SuperwallKit"))
-                {
-                    int targetIndex = podfileContent.IndexOf("target 'UnityFramework'");
-                    if (targetIndex >= 0)
-                    {
-                        int doIndex = podfileContent.IndexOf("do", targetIndex);
-                        if (doIndex >= 0)
-                        {
-                            int insertIndex = podfileContent.IndexOf('\n', doIndex) + 1;
-                            podfileContent = podfileContent.Insert(insertIndex, "  pod 'SuperwallKit', '~> 4.0'\n");
-                        }
-                    }
-                    else
-                    {
-                        podfileContent += "\ntarget 'UnityFramework' do\n  pod 'SuperwallKit', '~> 4.0'\nend\n";
-                    }
-
-                    File.WriteAllText(podfilePath, podfileContent);
-                    Debug.Log("[Superwall] Added SuperwallKit pod to existing Podfile");
-                }
-            }
-
-            // Modify the Xcode project to enable Swift
             string projPath = PBXProject.GetPBXProjectPath(buildPath);
             var project = new PBXProject();
             project.ReadFromFile(projPath);
 
             string unityFrameworkGuid = project.GetUnityFrameworkTargetGuid();
             string mainTargetGuid = project.GetUnityMainTargetGuid();
+
+            // Append builds reuse the exported project, so the package reference from a
+            // previous export may already be present — adding it again would duplicate it.
+            if (!File.ReadAllText(projPath).Contains(PackageRepositoryURL))
+            {
+                string packageGuid = project.AddRemotePackageReferenceAtVersionUpToNextMajor(
+                    PackageRepositoryURL, PackageMinimumVersion);
+                project.AddRemotePackageFrameworkToProject(
+                    unityFrameworkGuid, PackageProductName, packageGuid, false);
+                Debug.Log($"[Superwall] Added {PackageProductName} Swift Package dependency " +
+                    $"({PackageRepositoryURL}, {PackageMinimumVersion} up to next major).");
+            }
 
             // Enable modules and Swift for the framework target
             project.SetBuildProperty(unityFrameworkGuid, "CLANG_ENABLE_MODULES", "YES");
@@ -102,101 +65,31 @@ end
             }
 
             project.WriteToFile(projPath);
-
-            RunPodInstall(buildPath);
         }
 
-        private static void RunPodInstall(string buildPath)
+        // Older releases of this package integrated SuperwallKit via CocoaPods. On append
+        // builds the previously generated Podfile survives, and leaving the pod in place
+        // alongside the Swift Package would link SuperwallKit twice.
+        private static void RemoveLegacyPodDependency(string buildPath)
         {
-            string podPath = LocatePodExecutable();
-            if (podPath == null)
-            {
-                Debug.LogWarning(
-                    "[Superwall] Could not locate the CocoaPods 'pod' executable. " +
-                    $"Run manually:\n\n    cd \"{buildPath}\" && pod install\n\n" +
-                    "If you don't have CocoaPods installed: 'sudo gem install cocoapods' " +
-                    "or 'brew install cocoapods'.");
-                return;
-            }
+            string podfilePath = Path.Combine(buildPath, "Podfile");
+            if (!File.Exists(podfilePath)) return;
 
-            var process = new System.Diagnostics.Process();
-            process.StartInfo.FileName = "/bin/bash";
-            // Login shell so user PATH from ~/.zshrc / ~/.bash_profile is loaded (rbenv/asdf shims, Homebrew).
-            process.StartInfo.Arguments = $"-l -c \"cd '{buildPath}' && '{podPath}' install\"";
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.RedirectStandardOutput = true;
-            process.StartInfo.RedirectStandardError = true;
-            // Some Ruby installs (rbenv/asdf) misbehave when these env vars are inherited from Unity.
-            process.StartInfo.EnvironmentVariables.Remove("MONO_PATH");
-            process.StartInfo.EnvironmentVariables.Remove("MONO_CFG_DIR");
-            process.StartInfo.EnvironmentVariables.Remove("DYLD_FALLBACK_LIBRARY_PATH");
-            process.StartInfo.EnvironmentVariables.Remove("DYLD_LIBRARY_PATH");
-            // CocoaPods crashes with Encoding::CompatibilityError under non-UTF-8 locales —
-            // Unity launched from Finder inherits launchd's empty LANG.
-            process.StartInfo.EnvironmentVariables["LANG"] = "en_US.UTF-8";
-            process.StartInfo.EnvironmentVariables["LC_ALL"] = "en_US.UTF-8";
+            string podfileContent = File.ReadAllText(podfilePath);
+            if (!podfileContent.Contains("SuperwallKit")) return;
 
-            try
+            var kept = new System.Collections.Generic.List<string>();
+            foreach (var line in podfileContent.Split('\n'))
             {
-                process.Start();
-                string output = process.StandardOutput.ReadToEnd();
-                string error = process.StandardError.ReadToEnd();
-                process.WaitForExit();
+                if (line.Contains("pod") && line.Contains("SuperwallKit")) continue;
+                kept.Add(line);
+            }
+            File.WriteAllText(podfilePath, string.Join("\n", kept));
 
-                if (process.ExitCode == 0)
-                {
-                    Debug.Log($"[Superwall] pod install completed successfully.\n{output}");
-                }
-                else
-                {
-                    Debug.LogWarning(
-                        $"[Superwall] pod install failed (exit code {process.ExitCode}). " +
-                        $"Run manually:\n\n    cd \"{buildPath}\" && pod install\n\n{error}");
-                }
-            }
-            catch (System.Exception e)
-            {
-                Debug.LogWarning(
-                    $"[Superwall] Could not run pod install automatically ({e.Message}). " +
-                    $"Run manually:\n\n    cd \"{buildPath}\" && pod install");
-            }
-        }
-
-        private static string LocatePodExecutable()
-        {
-            string home = System.Environment.GetEnvironmentVariable("HOME") ?? "";
-            string[] candidates =
-            {
-                "/usr/local/bin/pod",
-                "/opt/homebrew/bin/pod",
-                Path.Combine(home, ".rbenv/shims/pod"),
-                Path.Combine(home, ".asdf/shims/pod"),
-                "/usr/bin/pod",
-            };
-            foreach (var path in candidates)
-            {
-                if (!string.IsNullOrEmpty(path) && File.Exists(path)) return path;
-            }
-
-            // Fall back to `which pod` under a login shell.
-            try
-            {
-                var which = new System.Diagnostics.Process();
-                which.StartInfo.FileName = "/bin/bash";
-                which.StartInfo.Arguments = "-l -c \"command -v pod\"";
-                which.StartInfo.UseShellExecute = false;
-                which.StartInfo.RedirectStandardOutput = true;
-                which.StartInfo.RedirectStandardError = true;
-                which.Start();
-                string result = which.StandardOutput.ReadToEnd().Trim();
-                which.WaitForExit();
-                if (which.ExitCode == 0 && !string.IsNullOrEmpty(result) && File.Exists(result))
-                {
-                    return result;
-                }
-            }
-            catch { }
-            return null;
+            Debug.LogWarning(
+                "[Superwall] Removed the SuperwallKit pod from the Podfile — SuperwallKit is now " +
+                "integrated via Swift Package Manager. Run 'pod install' in the build folder to " +
+                "prune it from your Pods (or 'pod deintegrate' if SuperwallKit was your only pod).");
         }
 #endif
     }

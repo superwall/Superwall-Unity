@@ -20,7 +20,7 @@ https://github.com/superwall/Superwall-Unity.git
 
 ### Platform Dependencies
 
-**iOS** — The post-build processor automatically creates a Podfile and runs `pod install`. Requires [CocoaPods](https://cocoapods.org/).
+**iOS** — No manual setup needed. The post-build processor adds [SuperwallKit](https://github.com/superwall/Superwall-iOS) to the exported Xcode project via Swift Package Manager (resolved by Xcode on first build). CocoaPods is no longer required; if you append onto a build folder produced by an older version of this package, the processor removes the legacy SuperwallKit pod from the Podfile — run `pod install` (or `pod deintegrate` if it was your only pod) to prune it.
 
 **Android** — No manual setup needed. The package includes a Gradle library module that automatically pulls the Superwall Android SDK (pinned per release) and billing dependencies from Maven. The module inherits the compile SDK from your Player Settings and builds under both AGP 8.x (Unity 6000.3) and AGP 9+ (Unity 6000.4+).
 

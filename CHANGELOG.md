@@ -1,6 +1,12 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [0.3.0]
+
+### Breaking Changes
+* iOS: SuperwallKit is now integrated via Swift Package Manager instead of CocoaPods. The post-build processor adds a remote package reference to [Superwall-iOS](https://github.com/superwall/Superwall-iOS) (4.0.0 up to next major) on the `UnityFramework` target — no Podfile is generated and `pod install` is no longer run, so CocoaPods is no longer a requirement. Xcode resolves the package on first build.
+* iOS: on append builds onto a folder exported by an older version of this package, the processor strips the SuperwallKit pod from the leftover Podfile so the SDK isn't linked twice. Run `pod install` in the build folder to prune it from your Pods (or `pod deintegrate` if SuperwallKit was your only pod).
+
 ## [0.2.6]
 
 ### Dependencies
