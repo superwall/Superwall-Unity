@@ -1,7 +1,12 @@
 package com.superwall.sdk.unity
 
 import android.app.Activity
+import android.app.Application
 import android.net.Uri
+import android.os.Bundle
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.unity3d.player.UnityPlayer
 import com.superwall.sdk.Superwall
 import com.superwall.sdk.config.options.SuperwallOptions
@@ -70,11 +75,49 @@ class SuperwallUnityBridge {
                 is SubscriptionStatus.Unknown -> put("type", "unknown")
             }
         }
+
+        // Bridge-level option with no native counterpart; see PaywallOptions.HideAndroidSystemBars in C#.
+        // The paywall is its own Activity, so the host's immersive flags do not reach it, and the SDK's
+        // edge-to-edge handling pads only the bottom inset - in landscape the navigation bar sits on a side
+        // and covers paywall content. Matched by class name rather than type so a rename upstream degrades
+        // to "no-op" instead of a compile error.
+        private const val PAYWALL_ACTIVITY_CLASS_NAME = "com.superwall.sdk.paywall.view.SuperwallPaywallActivity"
+        private var hideAndroidSystemBars = false
+        private var paywallWindowCallbacksRegistered = false
+
+        private fun registerPaywallWindowCallbacks(application: Application) {
+            if (paywallWindowCallbacksRegistered) return
+            paywallWindowCallbacksRegistered = true
+            application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+                // Created AND resumed: created catches the first frame, resumed re-applies after a system
+                // dialog or the store sheet has shown the bars again.
+                override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = applySystemBarsPolicy(activity)
+                override fun onActivityResumed(activity: Activity) = applySystemBarsPolicy(activity)
+                override fun onActivityStarted(activity: Activity) {}
+                override fun onActivityPaused(activity: Activity) {}
+                override fun onActivityStopped(activity: Activity) {}
+                override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+                override fun onActivityDestroyed(activity: Activity) {}
+            })
+        }
+
+        private fun applySystemBarsPolicy(activity: Activity) {
+            if (!hideAndroidSystemBars) return
+            if (activity.javaClass.name != PAYWALL_ACTIVITY_CLASS_NAME) return
+            val window = activity.window ?: return
+            WindowCompat.setDecorFitsSystemWindows(window, false)
+            WindowInsetsControllerCompat(window, window.decorView).apply {
+                // Sticky immersive: a swipe from the edge shows the bars transiently, then they hide again.
+                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                hide(WindowInsetsCompat.Type.systemBars())
+            }
+        }
     }
 
     fun configure(apiKey: String, optionsJson: String?, hasPurchaseController: Boolean, completionCallbackId: String?) {
         val activity = UnityPlayer.currentActivity ?: return
         val options = if (optionsJson != null) parseOptions(optionsJson) else null
+        registerPaywallWindowCallbacks(activity.application)
 
         val unityActivityProvider = object : com.superwall.sdk.misc.ActivityProvider {
             override fun getCurrentActivity(): Activity? = UnityPlayer.currentActivity
@@ -840,6 +883,8 @@ class SuperwallUnityBridge {
             }
             if (json.has("paywalls")) {
                 val paywallsJson = json.getJSONObject("paywalls")
+                // Bridge-level, not a SuperwallOptions field: consumed by applySystemBarsPolicy.
+                if (paywallsJson.has("hideAndroidSystemBars")) hideAndroidSystemBars = paywallsJson.getBoolean("hideAndroidSystemBars")
                 if (paywallsJson.has("isHapticFeedbackEnabled")) paywalls.isHapticFeedbackEnabled = paywallsJson.getBoolean("isHapticFeedbackEnabled")
                 if (paywallsJson.has("shouldShowPurchaseFailureAlert")) paywalls.shouldShowPurchaseFailureAlert = paywallsJson.getBoolean("shouldShowPurchaseFailureAlert")
                 if (paywallsJson.has("shouldPreload")) paywalls.shouldPreload = paywallsJson.getBoolean("shouldPreload")

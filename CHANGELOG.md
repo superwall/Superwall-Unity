@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [Unreleased]
+
+### Added
+* `PaywallOptions.HideAndroidSystemBars` (default `false`). Android only: hides the status and navigation bars while `SuperwallPaywallActivity` is in the foreground, sticky-immersive, so a paywall matches an app that already runs full-screen. The paywall is its own Activity, so the host app's immersive flags never reached it, and the SDK's edge-to-edge handling pads only the bottom inset — in landscape the 3-button navigation bar sits on a side and covered paywall content. Ignored on iOS.
+
 ## [0.2.6]
 
 ### Dependencies
