@@ -30,10 +30,19 @@ import com.superwall.sdk.paywall.presentation.register
 import com.superwall.sdk.paywall.presentation.dismissSync
 import com.superwall.sdk.paywall.presentation.get_presentation_result.getPresentationResult
 import com.superwall.sdk.paywall.presentation.result.PresentationResult
+import com.superwall.sdk.analytics.superwall.SuperwallEvent
 import com.superwall.sdk.analytics.superwall.SuperwallEventInfo
 import java.net.URI
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import com.superwall.sdk.models.internal.RedemptionResult
 import com.superwall.sdk.store.abstractions.product.StoreProduct
+import com.superwall.sdk.store.abstractions.product.StoreProductType
+import com.superwall.sdk.store.abstractions.transactions.StoreTransaction
+import com.superwall.sdk.store.abstractions.transactions.StoreTransactionType
+import com.superwall.sdk.store.transactions.RestoreType
 import kotlinx.coroutines.*
 import kotlin.time.Duration.Companion.seconds
 import org.json.JSONArray
@@ -756,6 +765,92 @@ class SuperwallUnityBridge {
         set.forEach { put(serializeEntitlement(it)) }
     }
 
+    // java.time needs API 26 and this module's minSdk is 25, hence SimpleDateFormat.
+    private val iso8601Formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+        timeZone = TimeZone.getTimeZone("UTC")
+    }
+
+    private fun iso8601String(date: Date): String = iso8601Formatter.format(date)
+
+    // Mirrors the C# `StoreTransaction` model (Runtime/Models/StoreTransaction.cs). Dates are ISO 8601
+    // strings, matching the model's string fields. Optional values are omitted rather than sent as null.
+    private fun serializeStoreTransaction(t: StoreTransactionType) = JSONObject().apply {
+        if (t is StoreTransaction) {
+            put("configRequestId", t.configRequestId)
+            put("appSessionId", t.appSessionId)
+        }
+        t.transactionDate?.let { put("transactionDate", iso8601String(it)) }
+        t.originalTransactionIdentifier?.let { put("originalTransactionIdentifier", it) }
+        t.storeTransactionId?.let { put("storeTransactionId", it) }
+        t.originalTransactionDate?.let { put("originalTransactionDate", iso8601String(it)) }
+        t.webOrderLineItemID?.let { put("webOrderLineItemID", it) }
+        t.appBundleId?.let { put("appBundleId", it) }
+        t.subscriptionGroupId?.let { put("subscriptionGroupId", it) }
+        t.isUpgraded?.let { put("isUpgraded", it) }
+        t.expirationDate?.let { put("expirationDate", iso8601String(it)) }
+        t.offerId?.let { put("offerId", it) }
+        t.revocationDate?.let { put("revocationDate", iso8601String(it)) }
+    }
+
+    // Events carry the `StoreProductType` interface; the full serializer needs the concrete class.
+    private fun serializeStoreProductType(product: StoreProductType): JSONObject =
+        (product as? StoreProduct)?.let { serializeStoreProduct(it) }
+            ?: JSONObject().put("productIdentifier", product.productIdentifier)
+
+    // The fields of a `SuperwallEvent` are what a consumer needs to act on a purchase (the product,
+    // the store transaction, the paywall). `params` carries flattened analytics values only, so
+    // without this the C# `SuperwallEventInfo.Product` / `.Transaction` / `.PaywallInfo` were always
+    // null. Keys match the fields `BridgeCallbackHandler.DeserializeSuperwallEventInfo` reads.
+    private fun appendEventPayload(event: SuperwallEvent, json: JSONObject) {
+        when (event) {
+            is SuperwallEvent.PaywallOpen -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            is SuperwallEvent.PaywallClose -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            is SuperwallEvent.PaywallDecline -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            is SuperwallEvent.TransactionTimeout -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            is SuperwallEvent.TransactionStart -> {
+                json.put("product", serializeStoreProductType(event.product))
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.TransactionAbandon -> {
+                json.put("product", serializeStoreProductType(event.product))
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.TransactionComplete -> {
+                event.transaction?.let { json.put("transaction", serializeStoreTransaction(it)) }
+                json.put("product", serializeStoreProductType(event.product))
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.SubscriptionStart -> {
+                json.put("product", serializeStoreProduct(event.product))
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.FreeTrialStart -> {
+                json.put("product", serializeStoreProduct(event.product))
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.TransactionFail -> {
+                json.put("error", event.error.message ?: "")
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.TransactionRestore -> {
+                when (val restoreType = event.restoreType) {
+                    is RestoreType.ViaPurchase -> {
+                        json.put("restoreType", "viaPurchase")
+                        restoreType.transaction?.let { json.put("transaction", serializeStoreTransaction(it)) }
+                    }
+                    is RestoreType.ViaRestore -> json.put("restoreType", "viaRestore")
+                }
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.NonRecurringProductPurchase -> {
+                // `TransactionProduct` is a slimmer type than `StoreProduct`; the identifier is what it shares.
+                json.put("product", JSONObject().put("productIdentifier", event.product.id))
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            else -> {}
+        }
+    }
+
     private fun serializeCustomerInfo(info: CustomerInfo) = JSONObject().apply {
         put("userId", info.userId)
         put("entitlements", JSONArray().apply { info.entitlements.forEach { put(serializeEntitlement(it)) } })
@@ -930,6 +1025,7 @@ class SuperwallUnityBridge {
             sendToUnity("handleSuperwallEvent", JSONObject().apply {
                 put("eventType", withInfo.event.rawName)
                 put("params", JSONObject(withInfo.params))
+                appendEventPayload(withInfo.event, this)
             })
         }
 

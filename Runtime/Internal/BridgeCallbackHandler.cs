@@ -573,7 +573,44 @@ namespace Superwall.Internal
             var paramsDict = GetDict(data, "params");
             info.Params = paramsDict;
 
+            // Populated by the native bridges only for the events that carry them (paywall open/close/
+            // decline, the transaction family). Absent keys leave the fields null.
+            info.PaywallInfo = DeserializePaywallInfo(GetDict(data, "paywallInfo"));
+
+            var productDict = GetDict(data, "product");
+            if (productDict != null)
+                info.Product = Superwall.DeserializeStoreProduct(productDict);
+
+            var transactionDict = GetDict(data, "transaction");
+            if (transactionDict != null)
+                info.Transaction = DeserializeStoreTransaction(transactionDict);
+
+            info.Error = GetString(data, "error");
+            info.RestoreType = GetString(data, "restoreType");
+
             return info;
+        }
+
+        private static StoreTransaction DeserializeStoreTransaction(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+
+            var transaction = new StoreTransaction();
+            transaction.ConfigRequestId = GetString(data, "configRequestId");
+            transaction.AppSessionId = GetString(data, "appSessionId");
+            transaction.TransactionDate = GetString(data, "transactionDate");
+            transaction.OriginalTransactionIdentifier = GetString(data, "originalTransactionIdentifier");
+            transaction.StoreTransactionId = GetString(data, "storeTransactionId");
+            transaction.OriginalTransactionDate = GetString(data, "originalTransactionDate");
+            transaction.WebOrderLineItemID = GetString(data, "webOrderLineItemID");
+            transaction.AppBundleId = GetString(data, "appBundleId");
+            transaction.SubscriptionGroupId = GetString(data, "subscriptionGroupId");
+            if (data.ContainsKey("isUpgraded") && data["isUpgraded"] != null)
+                transaction.IsUpgraded = GetBool(data, "isUpgraded");
+            transaction.ExpirationDate = GetString(data, "expirationDate");
+            transaction.OfferId = GetString(data, "offerId");
+            transaction.RevocationDate = GetString(data, "revocationDate");
+            return transaction;
         }
 
         private static RedemptionResult DeserializeRedemptionResult(Dictionary<string, object> data)

@@ -326,6 +326,103 @@ private func serializeSubscriptionStatus(_ status: SubscriptionStatus) -> [Strin
     }
 }
 
+private func iso8601String(_ date: Date) -> String {
+    return ISO8601DateFormatter().string(from: date)
+}
+
+// Mirrors the C# `StoreTransaction` model (Runtime/Models/StoreTransaction.cs). Dates are ISO 8601
+// strings, matching the model's string fields. Optional values are omitted rather than sent as null.
+private func serializeStoreTransaction(_ transaction: StoreTransaction) -> [String: Any] {
+    var dict: [String: Any] = [
+        "configRequestId": transaction.configRequestId,
+        "appSessionId": transaction.appSessionId,
+        "originalTransactionIdentifier": transaction.originalTransactionIdentifier
+    ]
+    if let transactionDate = transaction.transactionDate {
+        dict["transactionDate"] = iso8601String(transactionDate)
+    }
+    if let storeTransactionId = transaction.storeTransactionId {
+        dict["storeTransactionId"] = storeTransactionId
+    }
+    if let originalTransactionDate = transaction.originalTransactionDate {
+        dict["originalTransactionDate"] = iso8601String(originalTransactionDate)
+    }
+    if let webOrderLineItemID = transaction.webOrderLineItemID {
+        dict["webOrderLineItemID"] = webOrderLineItemID
+    }
+    if let appBundleId = transaction.appBundleId {
+        dict["appBundleId"] = appBundleId
+    }
+    if let subscriptionGroupId = transaction.subscriptionGroupId {
+        dict["subscriptionGroupId"] = subscriptionGroupId
+    }
+    if let isUpgraded = transaction.isUpgraded {
+        dict["isUpgraded"] = isUpgraded
+    }
+    if let expirationDate = transaction.expirationDate {
+        dict["expirationDate"] = iso8601String(expirationDate)
+    }
+    if let offerId = transaction.offerId {
+        dict["offerId"] = offerId
+    }
+    if let revocationDate = transaction.revocationDate {
+        dict["revocationDate"] = iso8601String(revocationDate)
+    }
+    return dict
+}
+
+// The associated values of a `SuperwallEvent` are what a consumer needs to act on a purchase
+// (the product, the store transaction, the paywall). `params` carries flattened analytics values
+// only, so without this the C# `SuperwallEventInfo.Product` / `.Transaction` / `.PaywallInfo` were
+// always null. Keys match the fields `BridgeCallbackHandler.DeserializeSuperwallEventInfo` reads.
+private func appendEventPayload(_ event: SuperwallEvent, to dict: inout [String: Any]) {
+    switch event {
+    case .paywallOpen(let paywallInfo),
+         .paywallClose(let paywallInfo),
+         .paywallDecline(let paywallInfo),
+         .transactionTimeout(let paywallInfo):
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .transactionStart(let product, let paywallInfo),
+         .transactionAbandon(let product, let paywallInfo),
+         .subscriptionStart(let product, let paywallInfo),
+         .freeTrialStart(let product, let paywallInfo):
+        dict["product"] = serializeStoreProduct(product)
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .transactionComplete(let transaction, let product, _, let paywallInfo):
+        if let transaction = transaction {
+            dict["transaction"] = serializeStoreTransaction(transaction)
+        }
+        dict["product"] = serializeStoreProduct(product)
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .transactionFail(let error, let paywallInfo):
+        dict["error"] = error.localizedDescription
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .transactionRestore(let restoreType, let paywallInfo):
+        switch restoreType {
+        case .viaPurchase(let transaction):
+            dict["restoreType"] = "viaPurchase"
+            if let transaction = transaction {
+                dict["transaction"] = serializeStoreTransaction(transaction)
+            }
+        case .viaRestore:
+            dict["restoreType"] = "viaRestore"
+        }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .nonRecurringProductPurchase(let product, let paywallInfo):
+        // `TransactionProduct` is a slimmer type than `StoreProduct`; the identifier is what it shares.
+        dict["product"] = ["productIdentifier": product.id]
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    default:
+        break
+    }
+}
+
 private func serializeEventInfo(_ info: SuperwallEventInfo) -> [String: Any] {
     var dict: [String: Any] = [
         "params": info.params
@@ -342,6 +439,7 @@ private func serializeEventInfo(_ info: SuperwallEventInfo) -> [String: Any] {
     // which also normalises Android's snake_case `rawName`.
     let described = String(describing: info.event)
     dict["eventType"] = String(described.prefix(while: { $0 != "(" }))
+    appendEventPayload(info.event, to: &dict)
     return dict
 }
 
