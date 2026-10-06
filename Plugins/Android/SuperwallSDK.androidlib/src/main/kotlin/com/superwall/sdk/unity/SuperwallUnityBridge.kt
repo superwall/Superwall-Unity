@@ -77,7 +77,10 @@ class SuperwallUnityBridge {
 
         fun serializeSubscriptionStatus(status: SubscriptionStatus) = JSONObject().apply {
             when (status) {
-                is SubscriptionStatus.Active -> put("type", "active")
+                is SubscriptionStatus.Active -> {
+                    put("type", "active")
+                    put("entitlements", serializeEntitlementSet(status.entitlements))
+                }
                 is SubscriptionStatus.Inactive -> put("type", "inactive")
                 is SubscriptionStatus.Unknown -> put("type", "unknown")
             }
