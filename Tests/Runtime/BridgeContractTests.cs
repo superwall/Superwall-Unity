@@ -3,6 +3,7 @@ using UnityEngine.TestTools;
 using NUnit.Framework;
 using System.Collections;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using Superwall;
 using Superwall.Internal;
 
@@ -473,6 +474,85 @@ namespace Superwall.Tests
             Assert.AreEqual(PaywallCloseReason.ManualClose, captured.CloseReason);
             Assert.AreEqual(0.123, captured.ResponseLoadDuration.Value, 0.0001);
         }
+
+        // --- Purchase controller replies ---
+
+        [UnityTest]
+        public IEnumerator PurchaseFromGooglePlay_NoPurchaseController_RepliesFailedInsteadOfHanging()
+        {
+            // Regression: with no C# purchase controller set the handler returned without replying,
+            // leaving the native purchase (and the paywall spinner) waiting forever.
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+
+            LogAssert.Expect(LogType.Log,
+                new Regex(@"RespondToPurchaseController\(callbackId=purchase-no-pc, result=.*""type"":""failed"""));
+
+            BridgeCallbackHandler.Instance.OnCallback(Json.Serialize(new Dictionary<string, object>
+            {
+                { "method", "purchaseFromGooglePlay" },
+                { "data", new Dictionary<string, object>
+                    {
+                        { "productId", "pro_monthly" },
+                        { "basePlanId", "" },
+                        { "offerId", "" },
+                        { "callbackId", "purchase-no-pc" }
+                    }
+                }
+            }));
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator RestorePurchases_NoPurchaseController_RepliesFailedInsteadOfHanging()
+        {
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+
+            LogAssert.Expect(LogType.Log,
+                new Regex(@"RespondToRestorePurchases\(callbackId=restore-no-pc, result=.*""type"":""failed"""));
+
+            BridgeCallbackHandler.Instance.OnCallback(Json.Serialize(new Dictionary<string, object>
+            {
+                { "method", "restorePurchases" },
+                { "data", new Dictionary<string, object> { { "callbackId", "restore-no-pc" } } }
+            }));
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator PurchaseFromGooglePlay_WithPurchaseController_ForwardsRequestAndReply()
+        {
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+
+            var controller = new MockPurchaseControllerContract();
+            BridgeCallbackHandler.Instance.PurchaseController = controller;
+
+            LogAssert.Expect(LogType.Log,
+                new Regex(@"RespondToPurchaseController\(callbackId=purchase-with-pc, result=.*""type"":""purchased"""));
+
+            BridgeCallbackHandler.Instance.OnCallback(Json.Serialize(new Dictionary<string, object>
+            {
+                { "method", "purchaseFromGooglePlay" },
+                { "data", new Dictionary<string, object>
+                    {
+                        { "productId", "pro_monthly" },
+                        { "basePlanId", "monthly" },
+                        { "offerId", "trial" },
+                        { "callbackId", "purchase-with-pc" }
+                    }
+                }
+            }));
+            yield return null;
+
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+            Assert.AreEqual("pro_monthly", controller.LastProductId);
+            Assert.AreEqual("monthly", controller.LastBasePlanId);
+            Assert.AreEqual("trial", controller.LastOfferId);
+        }
     }
 
     /// <summary>
@@ -500,5 +580,31 @@ namespace Superwall.Tests
         public void HandleSuperwallDeepLink(string fullURL, List<string> pathComponents, Dictionary<string, string> queryParameters) { }
         public void CustomerInfoDidChange(CustomerInfo from, CustomerInfo to) => OnCustomerInfoDidChange?.Invoke(from, to);
         public void UserAttributesDidChange(Dictionary<string, object> newAttributes) => OnUserAttributesDidChange?.Invoke(newAttributes);
+    }
+
+    class MockPurchaseControllerContract : IPurchaseController
+    {
+        public string LastProductId;
+        public string LastBasePlanId;
+        public string LastOfferId;
+
+        public void PurchaseFromAppStore(string productId, System.Action<PurchaseResult> completion)
+        {
+            LastProductId = productId;
+            completion(PurchaseResult.Purchased());
+        }
+
+        public void PurchaseFromGooglePlay(string productId, string basePlanId, string offerId, System.Action<PurchaseResult> completion)
+        {
+            LastProductId = productId;
+            LastBasePlanId = basePlanId;
+            LastOfferId = offerId;
+            completion(PurchaseResult.Purchased());
+        }
+
+        public void RestorePurchases(System.Action<RestorationResult> completion)
+        {
+            completion(RestorationResult.Restored());
+        }
     }
 }

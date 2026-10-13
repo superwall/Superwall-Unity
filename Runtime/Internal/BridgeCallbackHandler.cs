@@ -943,12 +943,19 @@ namespace Superwall.Internal
 
         #region Purchase Controller Handlers
 
+        private const string NoPurchaseControllerError =
+            "Superwall was configured with a purchase controller, but none is set.";
+
         private void HandlePurchaseFromAppStore(Dictionary<string, object> data)
         {
-            if (PurchaseController == null) return;
-
             var productId = GetString(data, "productId");
             var callbackId = GetString(data, "callbackId");
+
+            if (PurchaseController == null)
+            {
+                SendResponseToNative(callbackId, SerializePurchaseResult(PurchaseResult.Failed(NoPurchaseControllerError)));
+                return;
+            }
 
             PurchaseController.PurchaseFromAppStore(productId, (result) =>
             {
@@ -959,12 +966,25 @@ namespace Superwall.Internal
 
         private void HandlePurchaseFromGooglePlay(Dictionary<string, object> data)
         {
-            if (PurchaseController == null) return;
-
             var productId = GetString(data, "productId");
             var basePlanId = GetString(data, "basePlanId");
             var offerId = GetString(data, "offerId");
             var callbackId = GetString(data, "callbackId");
+
+            // Requests queue while the Unity player is paused under the paywall activity, so this
+            // one may arrive after the paywall closed and native stopped waiting. Starting a
+            // purchase then would show a store sheet with no paywall and drop its result.
+            if (!IsPurchaseStillPending(callbackId))
+            {
+                Debug.LogWarning($"[Superwall] Ignoring stale purchase request for {productId}: the paywall is no longer waiting for it.");
+                return;
+            }
+
+            if (PurchaseController == null)
+            {
+                SendResponseToNative(callbackId, SerializePurchaseResult(PurchaseResult.Failed(NoPurchaseControllerError)));
+                return;
+            }
 
             PurchaseController.PurchaseFromGooglePlay(productId, basePlanId, offerId, (result) =>
             {
@@ -975,15 +995,43 @@ namespace Superwall.Internal
 
         private void HandleRestorePurchases(Dictionary<string, object> data)
         {
-            if (PurchaseController == null) return;
-
             var callbackId = GetString(data, "callbackId");
+
+            if (!IsRestoreStillPending(callbackId))
+            {
+                Debug.LogWarning("[Superwall] Ignoring stale restore request: the paywall is no longer waiting for it.");
+                return;
+            }
+
+            if (PurchaseController == null)
+            {
+                SendRestoreResponseToNative(callbackId, SerializeRestorationResult(RestorationResult.Failed(NoPurchaseControllerError)));
+                return;
+            }
 
             PurchaseController.RestorePurchases((result) =>
             {
                 var resultDict = SerializeRestorationResult(result);
                 SendRestoreResponseToNative(callbackId, resultDict);
             });
+        }
+
+        private static bool IsPurchaseStillPending(string callbackId)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            return SuperwallBridgeAndroid.IsPurchasePending(callbackId);
+#else
+            return true;
+#endif
+        }
+
+        private static bool IsRestoreStillPending(string callbackId)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            return SuperwallBridgeAndroid.IsRestorePending(callbackId);
+#else
+            return true;
+#endif
         }
 
         #endregion

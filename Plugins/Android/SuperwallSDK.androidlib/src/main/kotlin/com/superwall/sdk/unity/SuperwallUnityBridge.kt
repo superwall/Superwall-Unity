@@ -1,6 +1,8 @@
 package com.superwall.sdk.unity
 
 import android.app.Activity
+import android.app.Application
+import android.os.Bundle
 import android.net.Uri
 import com.unity3d.player.UnityPlayer
 import com.superwall.sdk.Superwall
@@ -26,6 +28,7 @@ import com.superwall.sdk.models.triggers.Experiment
 import com.superwall.sdk.models.customer.CustomerInfo
 import com.superwall.sdk.paywall.presentation.PaywallInfo
 import com.superwall.sdk.paywall.presentation.PaywallPresentationHandler
+import com.superwall.sdk.paywall.view.SuperwallPaywallActivity
 import com.superwall.sdk.paywall.presentation.register
 import com.superwall.sdk.paywall.presentation.dismissSync
 import com.superwall.sdk.paywall.presentation.get_presentation_result.getPresentationResult
@@ -93,7 +96,7 @@ class SuperwallUnityBridge {
         }
 
         val purchaseController: PurchaseController? = if (hasPurchaseController) {
-            UnityPurchaseController().also { unityPurchaseController = it }
+            UnityPurchaseController(activity.application).also { unityPurchaseController = it }
         } else {
             unityPurchaseController = null
             null
@@ -467,6 +470,15 @@ class SuperwallUnityBridge {
         }
         controller.completeRestore(callbackId, result)
     }
+
+    // Called synchronously by C# right before it hands a request to the user's purchase controller.
+    // UnitySendMessage requests queue up while the Unity player is paused (it is while
+    // SuperwallPaywallActivity covers it), so a request can reach C# after native gave up on it.
+    fun isPurchasePending(callbackId: String): Boolean =
+        unityPurchaseController?.isPurchasePending(callbackId) ?: false
+
+    fun isRestorePending(callbackId: String): Boolean =
+        unityPurchaseController?.isRestorePending(callbackId) ?: false
 
     fun purchase(productId: String, callbackId: String) {
         scope.launch {
@@ -1086,7 +1098,9 @@ class SuperwallUnityBridge {
         }
     }
 
-    private class UnityPurchaseController : PurchaseController {
+    private class UnityPurchaseController(
+        private val application: Application,
+    ) : PurchaseController {
         private val pendingPurchases = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<PurchaseResult>>()
         private val pendingRestores = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<RestorationResult>>()
 
@@ -1099,19 +1113,21 @@ class SuperwallUnityBridge {
             val callbackId = java.util.UUID.randomUUID().toString()
             val deferred = CompletableDeferred<PurchaseResult>()
             pendingPurchases[callbackId] = deferred
-
-            sendToUnity("purchaseFromGooglePlay", JSONObject().apply {
-                put("productId", productDetails.productId)
-                put("basePlanId", basePlanId ?: "")
-                put("offerId", offerId ?: "")
-                put("callbackId", callbackId)
-            })
+            val watcher = completeWhenPaywallCloses {
+                deferred.complete(PurchaseResult.Cancelled())
+            }
 
             return try {
+                sendToUnity("purchaseFromGooglePlay", JSONObject().apply {
+                    put("productId", productDetails.productId)
+                    put("basePlanId", basePlanId ?: "")
+                    put("offerId", offerId ?: "")
+                    put("callbackId", callbackId)
+                })
                 deferred.await()
-            } catch (t: Throwable) {
+            } finally {
                 pendingPurchases.remove(callbackId)
-                PurchaseResult.Failed(t.message ?: "Purchase cancelled")
+                watcher?.let { application.unregisterActivityLifecycleCallbacks(it) }
             }
         }
 
@@ -1119,16 +1135,20 @@ class SuperwallUnityBridge {
             val callbackId = java.util.UUID.randomUUID().toString()
             val deferred = CompletableDeferred<RestorationResult>()
             pendingRestores[callbackId] = deferred
-
-            sendToUnity("restorePurchases", JSONObject().apply {
-                put("callbackId", callbackId)
-            })
+            val watcher = completeWhenPaywallCloses {
+                deferred.complete(
+                    RestorationResult.Failed(Throwable("Paywall closed before the restore completed"))
+                )
+            }
 
             return try {
+                sendToUnity("restorePurchases", JSONObject().apply {
+                    put("callbackId", callbackId)
+                })
                 deferred.await()
-            } catch (t: Throwable) {
+            } finally {
                 pendingRestores.remove(callbackId)
-                RestorationResult.Failed(t)
+                watcher?.let { application.unregisterActivityLifecycleCallbacks(it) }
             }
         }
 
@@ -1138,6 +1158,34 @@ class SuperwallUnityBridge {
 
         fun completeRestore(callbackId: String, result: RestorationResult) {
             pendingRestores.remove(callbackId)?.complete(result)
+        }
+
+        fun isPurchasePending(callbackId: String): Boolean = pendingPurchases.containsKey(callbackId)
+
+        fun isRestorePending(callbackId: String): Boolean = pendingRestores.containsKey(callbackId)
+
+        /**
+         * While SuperwallPaywallActivity is on screen the Unity player is paused, so the request
+         * sent to C# is not delivered until the paywall goes away. Without this, a paywall that is
+         * closed, crashes or is killed in the background leaves the request waiting forever.
+         * Returns null when no paywall is presented (e.g. a direct Superwall.purchase() call),
+         * where Unity is running and will answer.
+         */
+        private fun completeWhenPaywallCloses(onClose: () -> Unit): Application.ActivityLifecycleCallbacks? {
+            if (!Superwall.instance.isPaywallPresented) return null
+            val callbacks = object : Application.ActivityLifecycleCallbacks {
+                override fun onActivityDestroyed(activity: Activity) {
+                    if (activity is SuperwallPaywallActivity && activity.isFinishing) onClose()
+                }
+                override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+                override fun onActivityStarted(activity: Activity) {}
+                override fun onActivityResumed(activity: Activity) {}
+                override fun onActivityPaused(activity: Activity) {}
+                override fun onActivityStopped(activity: Activity) {}
+                override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+            }
+            application.registerActivityLifecycleCallbacks(callbacks)
+            return callbacks
         }
     }
 }
