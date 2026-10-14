@@ -1167,17 +1167,9 @@ class SuperwallUnityBridge {
                     android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                 ),
             )
-            // Like SuperwallPaywallActivity, hand back presses to the paywall, which navigates back
-            // or closes (closing reaches onFinished below).
-            d.setCancelable(false)
-            d.setOnKeyListener { _, keyCode, event ->
-                if (keyCode == android.view.KeyEvent.KEYCODE_BACK) {
-                    if (event.action == android.view.KeyEvent.ACTION_UP) view.backButtonPressed()
-                    true
-                } else {
-                    false
-                }
-            }
+            // Back press cancels the dialog, reported as declined. SuperwallPaywallActivity instead
+            // lets the paywall handle it (PaywallView.backButtonPressed), which superwall-android
+            // 2.7.23 doesn't expose yet.
             d.setOnDismissListener {
                 teardown(view)
                 respond(serializeResult(result))
