@@ -169,6 +169,11 @@ namespace Superwall.Internal
             Bridge.Call("registerPlacement", placement, paramsJson, handlerId, featureId, callbackId);
         }
 
+        internal static void PresentPaywallInDialog(string placement, string paramsJson, string callbackId)
+        {
+            Bridge.Call("presentPaywallInDialog", placement, paramsJson, callbackId);
+        }
+
         internal static void Dismiss()
         {
             Bridge.Call("dismiss");

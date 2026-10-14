@@ -13,6 +13,18 @@ namespace Superwall.Samples
         [Header("Superwall Configuration")]
         [SerializeField] private string apiKey = "YOUR_API_KEY";
 
+        [Tooltip("Logs Time.frameCount once a second, to check in logcat whether the Unity player keeps running while a paywall is on screen.")]
+        [SerializeField] private bool logFrameHeartbeat;
+
+        private float _nextHeartbeat;
+
+        void Update()
+        {
+            if (!logFrameHeartbeat || Time.realtimeSinceStartup < _nextHeartbeat) return;
+            _nextHeartbeat = Time.realtimeSinceStartup + 1f;
+            Debug.Log($"[SuperwallExample] heartbeat frame={Time.frameCount}");
+        }
+
         void Start()
         {
             // Configure Superwall with options
@@ -47,6 +59,22 @@ namespace Superwall.Samples
             {
                 Debug.Log("[SuperwallExample] Feature unlocked!");
                 // Your feature code here — this runs when the user has access
+            });
+        }
+
+        /// <summary>
+        /// EXPERIMENTAL (Android): shows the paywall in a Dialog over the Unity activity so Unity keeps
+        /// running while it is on screen. Use with logFrameHeartbeat and a purchase controller to
+        /// check that purchases complete.
+        /// </summary>
+        public void ShowPaywallInDialog(string placementName)
+        {
+            Superwall.Shared.PresentPaywallInDialogExperimental(placementName, completion: (result, error) =>
+            {
+                if (error != null)
+                    Debug.LogError($"[SuperwallExample] Dialog paywall error: {error}");
+                else
+                    Debug.Log($"[SuperwallExample] Dialog paywall finished: {result.Type}");
             });
         }
 

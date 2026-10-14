@@ -383,6 +383,47 @@ namespace Superwall
             CallNative_GetPresentationResult(placement, paramsJson, callbackId);
         }
 
+        // ------- Experimental: Dialog-hosted paywall (Android) -------
+
+        /// <summary>
+        /// EXPERIMENTAL, Android only. Shows the paywall for <paramref name="placement"/> in a
+        /// full-screen Dialog over the Unity activity instead of a separate paywall activity, so the
+        /// Unity player keeps running while the paywall is on screen (a separate activity pauses it,
+        /// which stalls purchase controller requests). Unlike <see cref="RegisterPlacement"/> this
+        /// does not gate a feature or call a presentation handler. The completion receives the
+        /// paywall result, or an error message when no paywall could be shown.
+        /// </summary>
+        public void PresentPaywallInDialogExperimental(string placement, Dictionary<string, object> parameters = null, Action<PaywallResult, string> completion = null)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            string paramsJson = parameters != null ? Json.Serialize(parameters) : null;
+            string callbackId = Guid.NewGuid().ToString();
+            BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
+            {
+                var dict = string.IsNullOrEmpty(json) ? null : Json.Deserialize(json) as Dictionary<string, object>;
+                string type = dict != null && dict.ContainsKey("type") ? dict["type"] as string : null;
+                switch (type)
+                {
+                    case "purchased":
+                        completion?.Invoke(PaywallResult.Purchased(dict.ContainsKey("productId") ? dict["productId"] as string : null), null);
+                        break;
+                    case "restored":
+                        completion?.Invoke(PaywallResult.Restored(), null);
+                        break;
+                    case "declined":
+                        completion?.Invoke(PaywallResult.Declined(), null);
+                        break;
+                    default:
+                        completion?.Invoke(null, dict != null && dict.ContainsKey("error") ? dict["error"] as string : "Unknown error");
+                        break;
+                }
+            });
+            SuperwallBridgeAndroid.PresentPaywallInDialog(placement, paramsJson, callbackId);
+#else
+            completion?.Invoke(null, "PresentPaywallInDialogExperimental is only supported on Android.");
+#endif
+        }
+
         // ------- Assignments -------
 
         public void ConfirmAllAssignments(Action<List<ConfirmedAssignment>> completion = null)

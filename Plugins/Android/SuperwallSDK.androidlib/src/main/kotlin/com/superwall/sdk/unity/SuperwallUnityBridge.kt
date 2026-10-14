@@ -374,6 +374,33 @@ class SuperwallUnityBridge {
         }
     }
 
+    // EXPERIMENTAL: shows the paywall in a full-screen Dialog owned by the Unity activity instead of
+    // SuperwallPaywallActivity. A Dialog does not pause its host activity, so the Unity player keeps
+    // running and purchase controller requests reach C# while the paywall is on screen. Used to
+    // validate that approach on devices before building it into presentation proper; it bypasses
+    // register()'s feature gating and presentation handler.
+    fun presentPaywallInDialog(placement: String, paramsJson: String?, callbackId: String) {
+        val params = paramsJson?.let {
+            try {
+                val json = JSONObject(it)
+                val map = mutableMapOf<String, Any>()
+                json.keys().forEach { key -> map[key] = json.get(key) }
+                map
+            } catch (_: JSONException) { null }
+        }
+        scope.launch {
+            val activity = UnityPlayer.currentActivity
+            if (activity == null || activity.isFinishing || activity.isDestroyed) {
+                sendAsyncResponse(callbackId, JSONObject().apply {
+                    put("type", "error")
+                    put("error", "No Unity activity to present on")
+                })
+                return@launch
+            }
+            UnityPaywallDialog(activity, callbackId).present(placement, params)
+        }
+    }
+
     fun confirmAllAssignments(callbackId: String) {
         scope.launch {
             val assignments = Superwall.instance.confirmAllAssignments().getOrNull() ?: emptyList()
@@ -1096,6 +1123,99 @@ class SuperwallUnityBridge {
                 put("to", serializeCustomerInfo(to))
             })
         }
+    }
+
+    private class UnityPaywallDialog(
+        private val activity: Activity,
+        private val callbackId: String,
+    ) : com.superwall.sdk.paywall.view.delegate.PaywallViewCallback {
+        private var dialog: android.app.Dialog? = null
+        private var paywallView: com.superwall.sdk.paywall.view.PaywallView? = null
+        private var result: com.superwall.sdk.paywall.presentation.internal.state.PaywallResult? = null
+        private var responded = false
+
+        suspend fun present(placement: String, params: Map<String, Any>?) {
+            com.superwall.sdk.paywall.presentation.get_paywall.builder.PaywallBuilder(placement)
+                .params(params)
+                .delegate(this)
+                .activity(activity)
+                .build()
+                .fold(
+                    onSuccess = { show(it) },
+                    onFailure = { error ->
+                        respond(JSONObject().apply {
+                            put("type", "error")
+                            put("error", error.message ?: "Unknown error")
+                        })
+                    }
+                )
+        }
+
+        private fun show(view: com.superwall.sdk.paywall.view.PaywallView) {
+            if (activity.isFinishing || activity.isDestroyed) {
+                teardown(view)
+                respond(JSONObject().put("type", "error").put("error", "Unity activity went away"))
+                return
+            }
+            paywallView = view
+            (view.parent as? android.view.ViewGroup)?.removeView(view)
+            val d = android.app.Dialog(activity, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen)
+            d.setContentView(
+                view,
+                android.view.ViewGroup.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                ),
+            )
+            // Back press cancels the dialog; that's a decline.
+            d.setOnDismissListener {
+                teardown(view)
+                respond(serializeResult(result))
+            }
+            dialog = d
+            d.show()
+            view.onViewCreated()
+        }
+
+        override fun onFinished(
+            paywall: com.superwall.sdk.paywall.view.PaywallView,
+            result: com.superwall.sdk.paywall.presentation.internal.state.PaywallResult,
+            shouldDismiss: Boolean,
+        ) {
+            this.result = result
+            if (shouldDismiss) dialog?.dismiss()
+        }
+
+        private fun teardown(view: com.superwall.sdk.paywall.view.PaywallView) {
+            // Same teardown PaywallComposable performs when its AndroidView is released.
+            view.beforeOnDestroy(forceCleanup = true)
+            view.encapsulatingActivity = null
+            scope.launch {
+                view.destroyed(forceCleanup = true)
+                view.cleanup()
+                (view.parent as? android.view.ViewGroup)?.removeView(view)
+            }
+            dialog = null
+            paywallView = null
+        }
+
+        private fun respond(data: JSONObject) {
+            if (responded) return
+            responded = true
+            sendAsyncResponse(callbackId, data)
+        }
+
+        private fun serializeResult(result: com.superwall.sdk.paywall.presentation.internal.state.PaywallResult?) =
+            JSONObject().apply {
+                when (result) {
+                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Purchased -> {
+                        put("type", "purchased")
+                        put("productId", result.productId)
+                    }
+                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Restored -> put("type", "restored")
+                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Declined, null -> put("type", "declined")
+                }
+            }
     }
 
     private class UnityPurchaseController(
