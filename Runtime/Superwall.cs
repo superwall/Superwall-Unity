@@ -832,6 +832,7 @@ namespace Superwall
                 paywalls["shouldShowWebRestorationAlert"] = options.Paywalls.ShouldShowWebRestorationAlert;
                 paywalls["transactionBackgroundView"] = options.Paywalls.TransactionBackgroundView.ToString();
                 paywalls["shouldShowWebPurchaseConfirmationAlert"] = options.Paywalls.ShouldShowWebPurchaseConfirmationAlert;
+                paywalls["hideAndroidSystemBars"] = options.Paywalls.HideAndroidSystemBars;
 
                 if (options.Paywalls.RestoreFailed != null)
                 {

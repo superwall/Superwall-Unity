@@ -34,6 +34,15 @@ namespace Superwall
         public bool ShouldShowWebPurchaseConfirmationAlert = false;
         public bool UseCachedTemplates = false;
         public float? TimeoutAfter = null;
+
+        /// <summary>
+        /// Android only. Hides the status and navigation bars while a Superwall paywall Activity is in the
+        /// foreground (sticky immersive: a swipe from the edge shows them transiently), so a paywall matches an
+        /// app that already runs full-screen. Without it the paywall Activity is edge-to-edge but pads only the
+        /// bottom system-bar inset, so in landscape the 3-button navigation bar covers paywall content on one
+        /// side. Ignored on iOS. Default false to keep the platform default for existing apps.
+        /// </summary>
+        public bool HideAndroidSystemBars = false;
     }
 
     [Serializable]
