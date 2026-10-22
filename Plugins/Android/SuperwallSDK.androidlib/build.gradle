@@ -21,7 +21,7 @@ if (agpMajor < 9) {
 
 // Follow the host project's compile SDK (Unity writes unity.compileSdkVersion
 // into the exported project's gradle.properties from Player Settings) so this
-// module never pins consumers to a stale SDK. superwall-android 2.8.7 pulls
+// module never pins consumers to a stale SDK. superwall-android 2.8.8 pulls
 // androidx.activity 1.10.1, which requires compileSdk >= 35 — hence the fallback.
 def unityCompileSdk = (findProperty('unity.compileSdkVersion') ?: '35') as int
 
@@ -43,7 +43,7 @@ android {
 dependencies {
     // Pinned exactly: a floating range (2.+) lets a Maven-side release break
     // consumer builds overnight. Bump deliberately with each Unity SDK release.
-    api 'com.superwall.sdk:superwall-android:2.8.7'
+    api 'com.superwall.sdk:superwall-android:2.8.8'
     api 'com.android.billingclient:billing:9.1.0'
     implementation 'com.google.android.material:material:1.12.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
