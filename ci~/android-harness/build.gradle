@@ -21,3 +21,37 @@ gradle.projectsEvaluated {
         }
     }
 }
+
+// JVM unit tests for the bridge's JSON contracts, kept in this harness (bridge-tests/) so nothing test-only
+// ships inside the Unity package. Run: gradle :SuperwallSDK:testDebugUnitTest
+// org.json is put on the test classpath because android.jar only carries stubs of it.
+project(':SuperwallSDK') {
+    // Build outputs stay in the harness (gitignored), never inside the shipped androidlib folder.
+    layout.buildDirectory = rootProject.layout.projectDirectory.dir('build/SuperwallSDK')
+    pluginManager.withPlugin('com.android.library') {
+        android {
+            // srcDir(), not `srcDirs +=`: AGP 9's source-set DSL ignores the reassignment and the tests went
+            // NO-SOURCE (green with nothing run). Kotlin dirs are registered too where the DSL has them.
+            def testSources = rootProject.file('bridge-tests/src/test/kotlin')
+            sourceSets.test.java.srcDir(testSources)
+            if (sourceSets.test.hasProperty('kotlin')) {
+                sourceSets.test.kotlin.srcDir(testSources)
+            }
+            testOptions.unitTests.returnDefaultValues = true
+        }
+        dependencies {
+            testImplementation project(':unity-stub')
+            testImplementation 'junit:junit:4.13.2'
+            testImplementation 'org.json:json:20240303'
+        }
+    }
+}
+
+// Local machines without AGP's default build-tools: -PbuildToolsVersion=36.0.0 (CI installs the default).
+subprojects {
+    pluginManager.withPlugin('com.android.library') {
+        if (rootProject.findProperty('buildToolsVersion')) {
+            android.buildToolsVersion = rootProject.findProperty('buildToolsVersion')
+        }
+    }
+}

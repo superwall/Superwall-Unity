@@ -72,3 +72,10 @@ jobs:
       - name: assembleRelease
         working-directory: ci~/android-harness
         run: gradle :SuperwallSDK:assembleRelease -PagpVersion=${{ matrix.agp }} --no-daemon --stacktrace
+
+      - name: Bridge JSON contract tests (JVM)
+        working-directory: ci~/android-harness
+        run: |
+          gradle :SuperwallSDK:testDebugUnitTest -PagpVersion=${{ matrix.agp }} --no-daemon --stacktrace
+          # NO-SOURCE is a green build that ran nothing; require the result files.
+          ls build/SuperwallSDK/test-results/testDebugUnitTest/TEST-*.xml

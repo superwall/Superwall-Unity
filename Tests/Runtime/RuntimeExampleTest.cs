@@ -179,6 +179,8 @@ namespace Superwall.Tests
             BridgeCallbackHandler.Initialize();
             yield return null;
 
+            // The handler reports a bad payload as an error log; the test asserts it neither throws nor goes silent.
+            LogAssert.Expect(LogType.Error, "[Superwall] Failed to deserialize callback payload.");
             Assert.DoesNotThrow(() =>
             {
                 BridgeCallbackHandler.Instance.OnCallback("not valid json");
@@ -196,6 +198,7 @@ namespace Superwall.Tests
                 { "data", new Dictionary<string, object>() }
             });
 
+            LogAssert.Expect(LogType.Error, "[Superwall] Callback payload missing 'method' field.");
             Assert.DoesNotThrow(() =>
             {
                 BridgeCallbackHandler.Instance.OnCallback(payload);
