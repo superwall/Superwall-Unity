@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using UnityEngine;
 using Superwall;
 
@@ -767,8 +768,6 @@ namespace Superwall.Internal
 
         private static Dictionary<string, object> SerializeCustomCallbackResult(CustomCallbackResult result)
         {
-            if (result == null) return new Dictionary<string, object> { { "status", "failure" } };
-
             var dict = new Dictionary<string, object>();
             dict["status"] = result.Status == CustomCallbackResultStatus.Success ? "success" : "failure";
             if (result.Data != null)
@@ -787,6 +786,26 @@ namespace Superwall.Internal
 #else
             Debug.Log($"[Superwall] RespondToPurchaseController(callbackId={callbackId}, result={json})");
 #endif
+        }
+
+        private static void SendCustomCallbackResponseToNative(string callbackId, CustomCallbackResult result)
+        {
+            if (string.IsNullOrEmpty(callbackId)) return;
+            try
+            {
+                var json = Json.Serialize(SerializeCustomCallbackResult(result));
+#if UNITY_IOS && !UNITY_EDITOR
+                SuperwallBridgeiOS._SuperwallBridge_RespondToCustomCallback(callbackId, json);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+                SuperwallBridgeAndroid.RespondToCustomCallback(callbackId, json);
+#else
+                Debug.Log($"[Superwall] RespondToCustomCallback(callbackId={callbackId}, result={json})");
+#endif
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[Superwall] Could not reply to custom callback {callbackId}: {e.Message}\n{e.StackTrace}");
+            }
         }
 
         private static void SendRestoreResponseToNative(string callbackId, Dictionary<string, object> resultDict)
@@ -1153,43 +1172,43 @@ namespace Superwall.Internal
             handler.OnSkip(reason);
         }
 
-        private void HandleOnCustomCallback(Dictionary<string, object> data)
+        // Native holds the paywall's request until it gets a reply, so every path here must reply.
+        // async void because RouteCallback can't await; nothing can escape, as RunCustomCallback
+        // catches what the handler throws and SendCustomCallbackResponseToNative catches the rest.
+        // Awaiting from here also resumes on Unity's main thread, wherever the handler's task
+        // finished, which is where the bridge calls have to come from.
+        private async void HandleOnCustomCallback(Dictionary<string, object> data)
         {
-            var handlerId = GetString(data, "handlerId");
-            if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
-
-            var handler = _presentationHandlers[handlerId];
-            if (handler.OnCustomCallback == null) return;
-
-            var callbackDict = GetDict(data, "customCallback");
-            CustomCallback customCallback = DeserializeCustomCallback(callbackDict);
-            CustomCallbackResult result = handler.OnCustomCallback(customCallback);
-
-            // Serialize result and send back to native via callbackId
             var callbackId = GetString(data, "callbackId");
-            if (!string.IsNullOrEmpty(callbackId))
+            var result = await RunCustomCallback(data);
+            SendCustomCallbackResponseToNative(callbackId, result);
+        }
+
+        private async Task<CustomCallbackResult> RunCustomCallback(Dictionary<string, object> data)
+        {
+            var customCallback = DeserializeCustomCallback(GetDict(data, "customCallback"));
+            var handlerId = GetString(data, "handlerId");
+            PaywallPresentationHandler handler = null;
+            if (handlerId != null) _presentationHandlers.TryGetValue(handlerId, out handler);
+
+            if (customCallback == null || handler?.OnCustomCallback == null)
             {
-                var resultDict = SerializeCustomCallbackResult(result);
-                var json = Json.Serialize(resultDict);
-                // Send via async response mechanism
-                var responsePayload = new Dictionary<string, object>
-                {
-                    { "callbackId", callbackId },
-                    { "result", resultDict }
-                };
-                var responseJson = Json.Serialize(new Dictionary<string, object>
-                {
-                    { "method", "asyncResponse" },
-                    { "data", responsePayload }
-                });
-                // Use the pending async callback if registered
-                if (_pendingAsyncCallbacks.ContainsKey(callbackId))
-                {
-                    var callback = _pendingAsyncCallbacks[callbackId];
-                    _pendingAsyncCallbacks.Remove(callbackId);
-                    callback?.Invoke(Json.Serialize(resultDict));
-                }
+                Debug.LogWarning($"[Superwall] No OnCustomCallback handler for custom callback '{customCallback?.Name}'; the paywall gets a failure.");
+                return CustomCallbackResult.Failure();
             }
+
+            try
+            {
+                var task = handler.OnCustomCallback(customCallback);
+                var result = task != null ? await task : null;
+                if (result != null) return result;
+                Debug.LogWarning($"[Superwall] OnCustomCallback returned null for '{customCallback.Name}'; the paywall gets a failure.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[Superwall] OnCustomCallback threw for '{customCallback.Name}': {e.Message}\n{e.StackTrace}");
+            }
+            return CustomCallbackResult.Failure();
         }
 
         #endregion

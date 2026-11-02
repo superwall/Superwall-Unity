@@ -284,5 +284,15 @@ namespace Superwall
     {
         public CustomCallbackResultStatus Status;
         public Dictionary<string, object> Data;
+
+        public static CustomCallbackResult Success(Dictionary<string, object> data = null)
+        {
+            return new CustomCallbackResult { Status = CustomCallbackResultStatus.Success, Data = data };
+        }
+
+        public static CustomCallbackResult Failure(Dictionary<string, object> data = null)
+        {
+            return new CustomCallbackResult { Status = CustomCallbackResultStatus.Failure, Data = data };
+        }
     }
 }

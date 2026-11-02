@@ -1,6 +1,21 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [0.4.0]
+
+### Enhancements
+* Custom callbacks now work on iOS and Android. `PaywallPresentationHandler.OnCustomCallback` runs when a paywall requests a callback, and the result you return drives the paywall's onSuccess/onFailure branch, with its `Data` readable as `callbacks.NAME.data.KEY`. Before, the field existed but neither native bridge called it, so every callback failed straight away without reaching C#.
+* Added `CustomCallbackResult.Success(data)` and `CustomCallbackResult.Failure(data)`.
+
+### Breaking Changes
+* `OnCustomCallback` is now `Func<CustomCallback, Task<CustomCallbackResult>>`, so a handler can wait on a network request without blocking the main thread. Write it as an `async` lambda. If it throws, is cancelled or returns null, the paywall gets a failure.
+
+### Android
+* Custom callbacks need the default in-window presentation. With `AndroidPaywallPresentation.Activity`, Unity is paused while the paywall is open, so each callback fails straight away and logs an error instead of leaving the paywall waiting.
+
+### Dependencies
+* iOS: the generated Podfile now requires SuperwallKit `>= 4.12.10, < 5.0`, the first versions with the custom callback API. A Podfile kept by an Append build is updated.
+
 ## [0.3.0]
 
 ### Enhancements
