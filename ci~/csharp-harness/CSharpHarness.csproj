@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Runs Tests/Runtime against the real Runtime/ sources on .NET, so CI covers the C# side of the
+    bridge contracts without a Unity licence (unity.yml is parked). UnityShim.cs stands in for the
+    small part of UnityEngine they use. It is not a replacement for running the tests in Unity.
+
+    To run it, see the csharp job in .github/workflows/native.yml.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <!-- Unity 6 compiles C# 9. Anything newer here would pass this harness and break in Unity. -->
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS0067;CS0169;CS0414;CS0649;CS1998;NUnit2005</NoWarn>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="UnityShim.cs;Program.cs" />
+    <Compile Include="../../Runtime/**/*.cs" />
+    <Compile Include="../../Tests/Runtime/**/*.cs" />
+    <Compile Include="../../Samples/**/*.cs" />
+    <PackageReference Include="NUnit" Version="3.14.0" />
+  </ItemGroup>
+</Project>

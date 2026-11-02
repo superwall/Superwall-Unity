@@ -129,11 +129,15 @@ private func parseEntitlementsFromJson(_ array: [[String: Any]]) -> Set<Entitlem
     return entitlements
 }
 
-private func sendToUnity(method: String, data: [String: Any]) {
+// Returns false if the payload could not be serialized, so C# will never see it. Most callers
+// ignore this; custom callbacks use it so they never wait on a request C# never got.
+@discardableResult
+private func sendToUnity(method: String, data: [String: Any]) -> Bool {
     let payload: [String: Any] = ["method": method, "data": data]
-    guard let json = toJsonString(payload) else { return }
+    guard let json = toJsonString(payload) else { return false }
     let cStr = (json as NSString).utf8String!
     UnitySendMessage("SuperwallBridge", "OnCallback", cStr)
+    return true
 }
 
 private func sendAsyncResponse(callbackId: String, data: [String: Any]) {
@@ -609,10 +613,66 @@ private class UnityPurchaseController: PurchaseController {
     }
 }
 
+// MARK: - Unity Custom Callbacks
+
+/// Holds each paywall custom callback until C# replies. The paywall waits on `request`, and
+/// C# answers through `respond` with the same callbackId.
+final class UnityCustomCallbacks {
+    private var pending: [String: CheckedContinuation<CustomCallbackResult, Never>] = [:]
+    private let lock = NSLock()
+    private let send: (String, [String: Any]) -> Bool
+
+    init(send: @escaping (String, [String: Any]) -> Bool) {
+        self.send = send
+    }
+
+    // No timeout, same as the native SDKs: a handler can legitimately take as long as it needs.
+    @MainActor
+    func request(handlerId: String, callback: CustomCallback) async -> CustomCallbackResult {
+        let callbackId = UUID().uuidString
+        return await withCheckedContinuation { continuation in
+            lock.lock()
+            pending[callbackId] = continuation
+            lock.unlock()
+
+            var customCallback: [String: Any] = ["name": callback.name]
+            if let variables = callback.variables {
+                customCallback["variables"] = variables
+            }
+            let sent = send("onCustomCallback", [
+                "handlerId": handlerId,
+                "callbackId": callbackId,
+                "customCallback": customCallback
+            ])
+            if !sent {
+                finish(callbackId: callbackId, result: .failure())
+            }
+        }
+    }
+
+    func respond(callbackId: String, resultJson: String) {
+        finish(callbackId: callbackId, result: parseResult(resultJson))
+    }
+
+    private func finish(callbackId: String, result: CustomCallbackResult) {
+        lock.lock()
+        let continuation = pending.removeValue(forKey: callbackId)
+        lock.unlock()
+        continuation?.resume(returning: result)
+    }
+
+    private func parseResult(_ resultJson: String) -> CustomCallbackResult {
+        guard let dict = parseJson(resultJson) else { return .failure() }
+        let data = dict["data"] as? [String: Any]
+        return dict["status"] as? String == "success" ? .success(data: data) : .failure(data: data)
+    }
+}
+
 // MARK: - Stored State
 
 private var unityDelegate: SuperwallUnityDelegate?
 private var unityPurchaseController: UnityPurchaseController?
+let unityCustomCallbacks = UnityCustomCallbacks { method, data in sendToUnity(method: method, data: data) }
 private var pendingFeatureHandlers: [String: () -> Void] = [:]
 private var pendingLocalResources: [String: URL] = [:]
 private var didConfigure = false
@@ -1064,6 +1124,9 @@ public func _SuperwallBridge_RegisterPlacement(
                 "reason": reasonStr
             ])
         }
+        handler?.onCustomCallback { callback in
+            await unityCustomCallbacks.request(handlerId: hId!, callback: callback)
+        }
     }
 
     let feature: (() -> Void)? = fId.map { featureId in
@@ -1348,6 +1411,11 @@ public func _SuperwallBridge_RespondToPurchaseController(_ callbackId: UnsafePoi
     }
 
     unityPurchaseController?.respondToPurchase(callbackId: cbId, result: result)
+}
+
+@_cdecl("_SuperwallBridge_RespondToCustomCallback")
+public func _SuperwallBridge_RespondToCustomCallback(_ callbackId: UnsafePointer<CChar>, _ resultJson: UnsafePointer<CChar>) {
+    unityCustomCallbacks.respond(callbackId: String(cString: callbackId), resultJson: String(cString: resultJson))
 }
 
 @_cdecl("_SuperwallBridge_RespondToRestorePurchases")

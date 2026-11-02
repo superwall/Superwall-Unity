@@ -214,6 +214,11 @@ namespace Superwall.Internal
             Bridge.Call("respondToRestorePurchases", callbackId, resultJson);
         }
 
+        internal static void RespondToCustomCallback(string callbackId, string resultJson)
+        {
+            Bridge.Call("respondToCustomCallback", callbackId, resultJson);
+        }
+
         internal static bool IsPurchaseControllerRequestPending(string callbackId)
         {
             return Bridge.Call<bool>("isPurchaseControllerRequestPending", callbackId);

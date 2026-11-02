@@ -24,6 +24,10 @@ namespace Superwall.Editor
         }
 
 #if UNITY_IOS
+        // 4.12.10 added the custom callback API the bridge calls.
+        private const string SuperwallKitPod = "pod 'SuperwallKit', '>= 4.12.10', '< 5.0'";
+        private const string LegacySuperwallKitPod = "pod 'SuperwallKit', '~> 4.0'";
+
         private static void PostProcessIOS(string buildPath)
         {
             string podfilePath = Path.Combine(buildPath, "Podfile");
@@ -40,7 +44,7 @@ namespace Superwall.Editor
 use_frameworks!
 
 target 'UnityFramework' do
-  pod 'SuperwallKit', '~> 4.0'
+  {SuperwallKitPod}
 end
 
 target 'Unity-iPhone' do
@@ -69,16 +73,23 @@ end
                         if (doIndex >= 0)
                         {
                             int insertIndex = podfileContent.IndexOf('\n', doIndex) + 1;
-                            podfileContent = podfileContent.Insert(insertIndex, "  pod 'SuperwallKit', '~> 4.0'\n");
+                            podfileContent = podfileContent.Insert(insertIndex, $"  {SuperwallKitPod}\n");
                         }
                     }
                     else
                     {
-                        podfileContent += "\ntarget 'UnityFramework' do\n  pod 'SuperwallKit', '~> 4.0'\nend\n";
+                        podfileContent += $"\ntarget 'UnityFramework' do\n  {SuperwallKitPod}\nend\n";
                     }
 
                     File.WriteAllText(podfilePath, podfileContent);
                     Debug.Log("[Superwall] Added SuperwallKit pod to existing Podfile");
+                }
+                else if (podfileContent.Contains(LegacySuperwallKitPod))
+                {
+                    // An Append build keeps the Podfile from the last export. Without this, its old
+                    // requirement lets Podfile.lock hold a SuperwallKit the bridge can't compile against.
+                    File.WriteAllText(podfilePath, podfileContent.Replace(LegacySuperwallKitPod, SuperwallKitPod));
+                    Debug.Log("[Superwall] Updated the SuperwallKit requirement in the existing Podfile");
                 }
             }
 

@@ -12,3 +12,5 @@ ci~/android-harness/local.properties
 
 # Parked Unity workflow materializes a wrapping project here at CI time.
 _test-project/
+ci~/csharp-harness/bin/
+ci~/csharp-harness/obj/

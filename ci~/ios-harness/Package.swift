@@ -11,7 +11,7 @@ let package = Package(
         .library(name: "SuperwallBridge", targets: ["SuperwallBridge"])
     ],
     dependencies: [
-        .package(url: "https://github.com/superwall/Superwall-iOS", from: "4.0.0")
+        .package(url: "https://github.com/superwall/Superwall-iOS", from: "4.12.10")
     ],
     targets: [
         .target(
@@ -24,6 +24,10 @@ let package = Package(
                 "SuperwallUnityBridge-Bridging-Header.h.meta",
                 "SuperwallUnityBridge.swift.meta",
             ]
+        ),
+        .testTarget(
+            name: "SuperwallBridgeTests",
+            dependencies: ["SuperwallBridge"]
         )
     ]
 )
