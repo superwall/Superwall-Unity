@@ -23,6 +23,8 @@ import com.superwall.sdk.store.abstractions.product.receipt.LatestSubscriptionSt
 import com.superwall.sdk.models.entitlements.SubscriptionStatus
 import com.superwall.sdk.models.triggers.Experiment
 import com.superwall.sdk.models.customer.CustomerInfo
+import com.superwall.sdk.paywall.presentation.CustomCallback
+import com.superwall.sdk.paywall.presentation.CustomCallbackResult
 import com.superwall.sdk.paywall.presentation.PaywallInfo
 import com.superwall.sdk.paywall.presentation.PaywallPresentationHandler
 import com.superwall.sdk.paywall.presentation.register
@@ -49,12 +51,98 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 
+/**
+ * Holds each paywall custom callback until C# replies. The paywall waits on [request], and
+ * C# answers through [respond] with the same callbackId.
+ */
+internal class UnityCustomCallbacks(private val sendToUnity: (String, JSONObject) -> Boolean) {
+    private val pending = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<CustomCallbackResult>>()
+
+    // An activity-hosted paywall pauses Unity's player loop, so C# can't reply until it closes.
+    @Volatile
+    var unityPausedWhilePresenting = false
+
+    suspend fun request(handlerId: String, callback: CustomCallback): CustomCallbackResult {
+        if (unityPausedWhilePresenting) {
+            android.util.Log.e(
+                TAG,
+                "Custom callback '${callback.name}' failed: Unity is paused while the paywall is open. " +
+                    "Custom callbacks need AndroidPaywallPresentation.InWindow."
+            )
+            return CustomCallbackResult.failure()
+        }
+
+        val callbackId = java.util.UUID.randomUUID().toString()
+        val deferred = CompletableDeferred<CustomCallbackResult>()
+        pending[callbackId] = deferred
+
+        return try {
+            // The name and variables come straight from the paywall, so a bad value must fail
+            // this request rather than leave it waiting for a reply C# was never asked for.
+            val sent = sendToUnity("onCustomCallback", JSONObject().apply {
+                put("handlerId", handlerId)
+                put("callbackId", callbackId)
+                put("customCallback", JSONObject().apply {
+                    put("name", callback.name)
+                    callback.variables?.let { put("variables", JSONObject(it)) }
+                })
+            })
+            // No timeout, same as the native SDKs: a handler can legitimately take as long as it needs.
+            if (sent) deferred.await() else CustomCallbackResult.failure()
+        } catch (e: JSONException) {
+            android.util.Log.e(TAG, "Could not send custom callback '${callback.name}' to Unity", e)
+            CustomCallbackResult.failure()
+        } finally {
+            pending.remove(callbackId)
+        }
+    }
+
+    fun respond(callbackId: String, resultJson: String) {
+        val deferred = pending.remove(callbackId)
+        if (deferred == null) {
+            android.util.Log.w(TAG, "Ignoring custom callback result for finished request $callbackId")
+            return
+        }
+        deferred.complete(parseResult(resultJson))
+    }
+
+    private fun parseResult(resultJson: String): CustomCallbackResult = try {
+        val json = JSONObject(resultJson)
+        @Suppress("UNCHECKED_CAST")
+        val data = (json.optJSONObject("data")?.let(::fromJson)) as Map<String, Any>?
+        if (json.optString("status") == "success") {
+            CustomCallbackResult.success(data)
+        } else {
+            CustomCallbackResult.failure(data)
+        }
+    } catch (e: JSONException) {
+        android.util.Log.e(TAG, "Invalid custom callback result JSON", e)
+        CustomCallbackResult.failure()
+    }
+
+    private fun fromJson(value: Any?): Any? = when (value) {
+        is JSONObject -> {
+            val map = mutableMapOf<String, Any>()
+            value.keys().forEach { key -> fromJson(value.get(key))?.let { map[key] = it } }
+            map
+        }
+        is JSONArray -> (0 until value.length()).mapNotNull { fromJson(value.get(it)) }
+        JSONObject.NULL -> null
+        else -> value
+    }
+
+    private companion object {
+        const val TAG = "SuperwallUnity"
+    }
+}
+
 @Suppress("unused")
 class SuperwallUnityBridge {
 
     companion object {
         private var unityDelegate: SuperwallUnityDelegateImpl? = null
         private var unityPurchaseController: UnityPurchaseController? = null
+        private val customCallbacks = UnityCustomCallbacks { method, data -> sendToUnity(method, data) }
         private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
         private const val TAG = "SuperwallUnity"
@@ -85,13 +173,6 @@ class SuperwallUnityBridge {
             } catch (_: Exception) {}
         }
 
-        fun serializeSubscriptionStatus(status: SubscriptionStatus) = JSONObject().apply {
-            when (status) {
-                is SubscriptionStatus.Active -> put("type", "active")
-                is SubscriptionStatus.Inactive -> put("type", "inactive")
-                is SubscriptionStatus.Unknown -> put("type", "unknown")
-            }
-        }
     }
 
     fun configure(apiKey: String, optionsJson: String?, hasPurchaseController: Boolean, completionCallbackId: String?) {
@@ -103,6 +184,9 @@ class SuperwallUnityBridge {
                 ?: SuperwallOptions().apply {
                     paywalls.presentationHost = com.superwall.sdk.config.options.PaywallOptions.PresentationHost.IN_WINDOW
                 }
+
+        customCallbacks.unityPausedWhilePresenting =
+            options.paywalls.presentationHost == com.superwall.sdk.config.options.PaywallOptions.PresentationHost.ACTIVITY
 
         val unityActivityProvider = object : com.superwall.sdk.misc.ActivityProvider {
             override fun getCurrentActivity(): Activity? = UnityPlayer.currentActivity
@@ -244,6 +328,17 @@ class SuperwallUnityBridge {
         }
     }
 
+    private fun serializeSubscriptionStatus(status: SubscriptionStatus) = JSONObject().apply {
+        when (status) {
+            is SubscriptionStatus.Active -> {
+                put("type", "active")
+                put("entitlements", serializeEntitlementSet(status.entitlements))
+            }
+            is SubscriptionStatus.Inactive -> put("type", "inactive")
+            is SubscriptionStatus.Unknown -> put("type", "unknown")
+        }
+    }
+
     fun getSubscriptionStatus(): String = serializeSubscriptionStatus(Superwall.instance.subscriptionStatus.value).toString()
 
     fun setSubscriptionStatus(statusJson: String) {
@@ -353,6 +448,7 @@ class SuperwallUnityBridge {
                     put("reason", reasonStr)
                 })
             }
+            handler.onCustomCallback { callback -> customCallbacks.request(handlerId, callback) }
         }
 
         val feature: (() -> Unit)? = featureId?.let { fId ->
@@ -482,6 +578,10 @@ class SuperwallUnityBridge {
             RestorationResult.Failed(Throwable("Invalid restoration result JSON: ${e.message}"))
         }
         controller.completeRestore(callbackId, result)
+    }
+
+    fun respondToCustomCallback(callbackId: String, resultJson: String) {
+        customCallbacks.respond(callbackId, resultJson)
     }
 
     // Called synchronously by C# before it runs a purchase/restore request. A request can sit

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using UnityEngine;
 using Superwall;
 
@@ -40,7 +41,15 @@ namespace Superwall.Samples
                 OnPresent = (info) => Debug.Log($"[SuperwallExample] Paywall presented: {info.Identifier}"),
                 OnDismiss = (info, result) => Debug.Log($"[SuperwallExample] Paywall dismissed: {result.Type}"),
                 OnError = (error) => Debug.LogError($"[SuperwallExample] Paywall error: {error}"),
-                OnSkip = (reason) => Debug.Log($"[SuperwallExample] Paywall skipped: {reason}")
+                OnSkip = (reason) => Debug.Log($"[SuperwallExample] Paywall skipped: {reason}"),
+                // Runs when the paywall requests a callback. Await your own API here; the result
+                // picks the paywall's onSuccess or onFailure branch.
+                OnCustomCallback = async (callback) =>
+                {
+                    Debug.Log($"[SuperwallExample] Custom callback: {callback.Name}");
+                    await Task.Delay(100);
+                    return CustomCallbackResult.Success(new Dictionary<string, object> { { "handled", true } });
+                }
             };
 
             Superwall.Shared.RegisterPlacement(placementName, handler: handler, feature: () =>

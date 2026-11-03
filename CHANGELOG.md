@@ -9,6 +9,21 @@ All notable changes to this package will be documented in this file.
 ### Dependencies
 * Android: pins the native SDK to 2.9.0 (was `2.8.7`). [View Android SDK release notes](https://github.com/superwall/Superwall-Android/releases/tag/2.9.0).
 
+## [0.4.0]
+
+### Enhancements
+* Custom callbacks now work on iOS and Android. `PaywallPresentationHandler.OnCustomCallback` runs when a paywall requests a callback, and the result you return drives the paywall's onSuccess/onFailure branch, with its `Data` readable as `callbacks.NAME.data.KEY`. Before, the field existed but neither native bridge called it, so every callback failed straight away without reaching C#.
+* Added `CustomCallbackResult.Success(data)` and `CustomCallbackResult.Failure(data)`.
+
+### Breaking Changes
+* `OnCustomCallback` is now `Func<CustomCallback, Task<CustomCallbackResult>>`, so a handler can wait on a network request without blocking the main thread. Write it as an `async` lambda. If it throws, is cancelled or returns null, the paywall gets a failure.
+
+### Android
+* Custom callbacks need the default in-window presentation. With `AndroidPaywallPresentation.Activity`, Unity is paused while the paywall is open, so each callback fails straight away and logs an error instead of leaving the paywall waiting.
+
+### Dependencies
+* iOS: the generated Podfile now requires SuperwallKit `>= 4.12.10, < 5.0`, the first versions with the custom callback API. A Podfile kept by an Append build is updated.
+
 ## [0.3.0]
 
 ### Enhancements
@@ -19,6 +34,7 @@ All notable changes to this package will be documented in this file.
 
 ### Fixes
 * Android purchase controller requests that can't reach Unity now fail straight away instead of waiting for a reply that never comes. A request the native SDK has given up on is cancelled on the C# side and no longer starts a store transaction with no paywall on screen. A purchase controller that throws now replies `Failed`, and each request is answered at most once.
+* Android `SubscriptionStatus.Active` getter serialization emitted only `{ type: "active" }` and dropped its entitlement set, although the setter accepted entitlements. Unity therefore read `Active []` after writing `Active [premium]`, causing repeated entitlement pushes and leaving the merge guard blocked. Android now serializes the active entitlement set in the same shape as iOS.
 * Both native bridges serialized only 4 of the 13 fields of an `Entitlement` (`id`, a hardcoded `type`, `isActive`, `productIds`), so `LatestProductId`, `Store`, `StartsAt`, `RenewedAt`, `ExpiresAt`, `IsLifetime`, `WillRenew`, `State` and `OfferType` were always null on the C# side even though `DeserializeEntitlement` reads them. A consumer could not tell a trial from a paid subscription, nor read an expiry or renewal state, from the entitlement. Every field is now emitted on iOS and Android with one shared vocabulary (enum case names matching the C# enums, dates as epoch milliseconds).
 * `SuperwallEventInfo.EventType` was never populated: iOS serialized `String(describing: event)`, which on SuperwallKit versions without a `CustomStringConvertible` conformance dumps the case together with its associated values (`transactionComplete(transaction: ..., product: ...)`), and Android sends the snake_case `rawName` (`transaction_complete`). Neither matched the `EventType` enum, so every delegate event arrived as the default `FirstSeen` and any `switch` on it was dead. iOS now emits only the case name, and the C# parser accepts both camelCase and snake_case, logging a warning instead of failing silently when a name is still unknown. `EventType` gains the members both native SDKs already emit but C# lacked (`PaywallPageView`, `TestModeModalOpen`/`Close`, `CelExpressionResult`, `ErrorThrown`, `ReviewGranted`/`Denied`, `AttributionMatch`, `StripeCheckoutStart`/`Submit`/`Complete`/`Fail`), and the two placement names whose member is spelled differently (`deepLink_open` → `DeepLink`, `paywallWebviewLoad_processTerminated` → `PaywallWebviewProcessTerminated`) are mapped explicitly.
 * `SuperwallEventInfo.Product`, `.Transaction`, `.PaywallInfo`, `.Error` and `.RestoreType` were never populated on either platform: the bridges forwarded only `eventType` and the flattened `params`. The store transaction (and with it the store transaction id) was therefore unreachable from `handleSuperwallEvent`. Both bridges now serialize the associated values of the paywall and transaction events (`paywallOpen/Close/Decline`, `transactionStart/Abandon/Complete/Fail/Restore/Timeout`, `subscriptionStart`, `freeTrialStart`, `nonRecurringProductPurchase`), and the C# side reads them. Transaction dates are ISO 8601 strings, matching the existing `StoreTransaction` model.

@@ -110,6 +110,39 @@ Superwall.Shared.RegisterPlacement("upgrade", handler: handler, feature: () =>
 });
 ```
 
+## Custom Callbacks
+
+A paywall can ask your game to do some work and act on the result, for example creating an account through your own API and showing a server error on failure. Set `OnCustomCallback` on the presentation handler:
+
+```csharp
+var handler = new PaywallPresentationHandler
+{
+    OnCustomCallback = async (callback) =>
+    {
+        if (callback.Name != "createAccount")
+            return CustomCallbackResult.Failure();
+
+        // Variables holds the values the paywall sent, and is null if it sent none.
+        var email = callback.Variables?["email"] as string;
+        var signup = await MyApi.CreateAccountAsync(email);
+
+        return signup.Succeeded
+            ? CustomCallbackResult.Success()
+            : CustomCallbackResult.Failure(new Dictionary<string, object> { { "message", signup.Error } });
+    }
+};
+
+Superwall.Shared.RegisterPlacement("signup", handler: handler);
+```
+
+The result picks the paywall's onSuccess or onFailure branch, and `Data` is readable there as `callbacks.createAccount.data.message`. Values can be strings, numbers, booleans, lists and dictionaries.
+
+- A blocking callback holds the paywall's tap action until your task completes, so give network requests a timeout.
+- If the handler throws, is cancelled or returns null, or the placement has no `OnCustomCallback`, the paywall gets a failure.
+- On Android this needs the default in-window presentation. With `AndroidPaywallPresentation.Activity`, Unity is paused while the paywall is open, so callbacks always fail.
+
+`HandleCustomPaywallAction` on the delegate is different: it tells your game a button was tapped, and can't send anything back to the paywall.
+
 ## Delegate
 
 Implement `ISuperwallDelegate` to receive SDK lifecycle events:
