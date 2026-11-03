@@ -3,6 +3,9 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
+### Enhancements
+* Android: subscription replacement. When a paywall's Purchase action is set to replace an existing subscription, a custom purchase controller now receives the subscription being replaced through a new `IPurchaseController.PurchaseFromGooglePlay(productId, basePlanId, offerId, ProductReplacement replacement, completion)` overload. Pass `replacement.OldPurchaseToken` and `replacement.Mode` to the billing flow's `SubscriptionUpdateParams` to upgrade, downgrade or switch the user's subscription instead of buying a second one. The overload has a default implementation that calls the existing four-argument method, so existing controllers compile and behave as before. Purchases without a custom controller handle the replacement automatically.
+
 ### Dependencies
 * Android: pins the native SDK to 2.9.0 (was `2.8.7`). [View Android SDK release notes](https://github.com/superwall/Superwall-Android/releases/tag/2.9.0).
 

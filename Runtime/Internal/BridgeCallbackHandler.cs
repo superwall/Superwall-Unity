@@ -983,10 +983,20 @@ namespace Superwall.Internal
             var callbackId = GetString(data, "callbackId");
             if (!IsPurchaseRequestPending(callbackId)) return;
 
+            ProductReplacement replacement = null;
+            var replacementData = GetDict(data, "replacement");
+            if (replacementData != null)
+            {
+                replacement = new ProductReplacement(
+                    ProductReplacement.ParseMode(GetString(replacementData, "mode")),
+                    GetString(replacementData, "oldProductId"),
+                    GetString(replacementData, "oldPurchaseToken"));
+            }
+
             var reply = CreatePurchaseReply(callbackId);
             try
             {
-                PurchaseController.PurchaseFromGooglePlay(productId, basePlanId, offerId, reply);
+                PurchaseController.PurchaseFromGooglePlay(productId, basePlanId, offerId, replacement, reply);
             }
             catch (Exception e)
             {
