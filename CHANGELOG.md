@@ -1,6 +1,14 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [Unreleased]
+
+### Enhancements
+* Custom products now work with a purchase controller on iOS and Android. A custom product is one whose store is set to Custom on the Superwall dashboard, sold through your own payment system instead of the App Store or Google Play. They now reach a new `IPurchaseController.PurchaseCustomProduct(CustomProductPurchase purchase, completion)` method with the product's ID, the `CustomTransactionId` Superwall generated for the purchase (send it back from your server as `custom_transaction_id` to attribute the revenue), and on Android any subscription it replaces. The method has a default implementation that fails the purchase, so existing controllers compile unchanged.
+
+### Fixes
+* iOS sent custom products to `PurchaseFromAppStore` as if they were App Store products, so a controller tried to buy them from StoreKit. Android failed them without reaching C#. Both now call `PurchaseCustomProduct`.
+
 ## [0.4.1]
 
 ### Enhancements

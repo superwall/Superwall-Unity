@@ -236,6 +236,40 @@ public void PurchaseFromGooglePlay(string productId, string basePlanId, string o
 `replacement` is null for normal purchases. Implementing the overload is optional: by default it
 calls the four-argument `PurchaseFromGooglePlay` and ignores the replacement.
 
+### Custom products
+
+A custom product is one whose store is set to **Custom** on the Superwall dashboard: you sell it
+through your own payment system (Stripe, Paddle, a web checkout or another store) rather than the
+App Store or Google Play. On both platforms Superwall sends these to `PurchaseCustomProduct`
+instead of `PurchaseFromAppStore` or `PurchaseFromGooglePlay`:
+
+```csharp
+public void PurchaseCustomProduct(CustomProductPurchase purchase, Action<PurchaseResult> completion)
+{
+    // Start your checkout for purchase.ProductId. Pass purchase.CustomTransactionId along and have
+    // your server report it to Superwall as custom_transaction_id, so the revenue is attributed
+    // to the paywall that sold it.
+    MyCheckout.Buy(purchase.ProductId, purchase.CustomTransactionId, succeeded =>
+    {
+        if (succeeded)
+        {
+            // Superwall doesn't grant entitlements for custom products: set them yourself.
+            Superwall.Shared.SubscriptionStatus = SubscriptionStatus.CreateActive(myEntitlements);
+            completion(PurchaseResult.Purchased());
+        }
+        else
+        {
+            completion(PurchaseResult.Cancelled());
+        }
+    });
+}
+```
+
+On Android, `purchase.Replacement` is set when the purchase replaces a subscription the user has.
+For custom products its `OldProductId` comes from the active entitlements you reported, and
+`OldPurchaseToken` is null. Implementing `PurchaseCustomProduct` is optional: by default it fails
+the purchase.
+
 ## User Identity
 
 ```csharp

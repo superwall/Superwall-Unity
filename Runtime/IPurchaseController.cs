@@ -20,6 +20,19 @@ namespace Superwall
             ProductReplacement replacement, Action<PurchaseResult> completion)
             => PurchaseFromGooglePlay(productId, basePlanId, offerId, completion);
 
+        /// <summary>
+        /// Called on iOS and Android when the user buys a custom product: one whose store is set to
+        /// Custom on the Superwall dashboard. Buy it through your own payment system, then complete
+        /// with the result. Superwall doesn't grant entitlements for custom products, so after a
+        /// successful purchase set <c>Superwall.Shared.SubscriptionStatus</c> yourself.
+        /// The default implementation fails the purchase, so controllers that don't sell custom
+        /// products need no changes.
+        /// </summary>
+        void PurchaseCustomProduct(CustomProductPurchase purchase, Action<PurchaseResult> completion)
+            => completion(PurchaseResult.Failed(
+                "This purchase controller does not handle custom products. Implement " +
+                $"IPurchaseController.PurchaseCustomProduct to purchase {purchase?.ProductId}."));
+
         void RestorePurchases(Action<RestorationResult> completion);
     }
 }

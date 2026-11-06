@@ -1235,31 +1235,27 @@ class SuperwallUnityBridge {
             offerId: String?,
             replacement: ProductReplacement?
         ): PurchaseResult {
-            // Custom (non-Play) products have no ProductDetails. The C# controller only
-            // purchases Play products, so fail as the SDK's default implementation does.
-            val productDetails = product.rawStoreProduct?.underlyingProductDetails
-                ?: return PurchaseResult.Failed(
-                    "The Unity purchase controller does not handle custom products " +
-                        "(${product.fullIdentifier})."
-                )
-
             val callbackId = java.util.UUID.randomUUID().toString()
+            // Custom products (store "Custom" on the dashboard) have no ProductDetails: C# buys
+            // them through its own payment system with PurchaseCustomProduct.
+            val (method, request) = if (product.isCustomProduct) {
+                "purchaseCustomProduct" to customProductPurchaseRequest(
+                    callbackId, product.fullIdentifier, product.customTransactionId, replacement
+                )
+            } else {
+                val productDetails = product.rawStoreProduct?.underlyingProductDetails
+                    ?: return PurchaseResult.Failed(
+                        "No Google Play product details for ${product.fullIdentifier}."
+                    )
+                "purchaseFromGooglePlay" to googlePlayPurchaseRequest(
+                    callbackId, productDetails.productId, basePlanId, offerId, replacement
+                )
+            }
+
             val deferred = CompletableDeferred<PurchaseResult>()
             pendingPurchases[callbackId] = deferred
 
-            val sent = sendToUnity("purchaseFromGooglePlay", JSONObject().apply {
-                put("productId", productDetails.productId)
-                put("basePlanId", basePlanId ?: "")
-                put("offerId", offerId ?: "")
-                put("callbackId", callbackId)
-                if (replacement != null) {
-                    put("replacement", JSONObject().apply {
-                        put("mode", replacement.mode.rawName)
-                        put("oldProductId", replacement.oldProductId ?: JSONObject.NULL)
-                        put("oldPurchaseToken", replacement.oldPurchaseToken ?: JSONObject.NULL)
-                    })
-                }
-            })
+            val sent = sendToUnity(method, request)
             if (!sent) {
                 // C# never got the request, so no reply will ever come.
                 pendingPurchases.remove(callbackId)
@@ -1339,4 +1335,41 @@ class SuperwallUnityBridge {
             }
         }
     }
+}
+
+/** The `purchaseFromGooglePlay` request BridgeCallbackHandler.HandlePurchaseFromGooglePlay reads. */
+internal fun googlePlayPurchaseRequest(
+    callbackId: String,
+    productId: String,
+    basePlanId: String?,
+    offerId: String?,
+    replacement: ProductReplacement?
+): JSONObject = JSONObject().apply {
+    put("productId", productId)
+    put("basePlanId", basePlanId ?: "")
+    put("offerId", offerId ?: "")
+    put("callbackId", callbackId)
+    putReplacement(replacement)
+}
+
+/** The `purchaseCustomProduct` request BridgeCallbackHandler.HandlePurchaseCustomProduct reads. */
+internal fun customProductPurchaseRequest(
+    callbackId: String,
+    productId: String,
+    customTransactionId: String?,
+    replacement: ProductReplacement?
+): JSONObject = JSONObject().apply {
+    put("productId", productId)
+    put("customTransactionId", customTransactionId ?: JSONObject.NULL)
+    put("callbackId", callbackId)
+    putReplacement(replacement)
+}
+
+private fun JSONObject.putReplacement(replacement: ProductReplacement?) {
+    if (replacement == null) return
+    put("replacement", JSONObject().apply {
+        put("mode", replacement.mode.rawName)
+        put("oldProductId", replacement.oldProductId ?: JSONObject.NULL)
+        put("oldPurchaseToken", replacement.oldPurchaseToken ?: JSONObject.NULL)
+    })
 }
