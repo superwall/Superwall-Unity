@@ -13,6 +13,38 @@ namespace Superwall.Editor
     {
         public int callbackOrder => 99;
 
+        // 4.12.10 added the custom callback API the bridge calls. 4.19.1 keeps a paywall to the
+        // orientations the game allows (Screen.autorotateTo*), and stops it leaving the game
+        // rotated after it closes.
+        public const string SuperwallKitPod = "pod 'SuperwallKit', '>= 4.19.1', '< 5.0'";
+
+        // Requirements earlier versions of this package wrote. A Podfile still naming one of these
+        // is moved to SuperwallKitPod; any other requirement was set by hand and is kept. Only the
+        // version part is spelled out here so native-sdk-bump.yml's rewrite of SuperwallKitPod
+        // leaves these alone.
+        private static readonly string[] PreviousSuperwallKitRequirements =
+        {
+            "'~> 4.0'",
+            "'>= 4.12.10', '< 5.0'",
+        };
+
+        /// <summary>
+        /// Moves a SuperwallKit requirement written by an earlier version of this package to the
+        /// current one. Returns the Podfile unchanged if it has none.
+        /// </summary>
+        public static string UpdateSuperwallKitRequirement(string podfileContent)
+        {
+            foreach (string requirement in PreviousSuperwallKitRequirements)
+            {
+                string previousPod = "pod 'SuperwallKit', " + requirement;
+                if (previousPod != SuperwallKitPod)
+                {
+                    podfileContent = podfileContent.Replace(previousPod, SuperwallKitPod);
+                }
+            }
+            return podfileContent;
+        }
+
         public void OnPostprocessBuild(BuildReport report)
         {
 #if UNITY_IOS
@@ -24,10 +56,6 @@ namespace Superwall.Editor
         }
 
 #if UNITY_IOS
-        // 4.12.10 added the custom callback API the bridge calls.
-        private const string SuperwallKitPod = "pod 'SuperwallKit', '>= 4.12.10', '< 5.0'";
-        private const string LegacySuperwallKitPod = "pod 'SuperwallKit', '~> 4.0'";
-
         private static void PostProcessIOS(string buildPath)
         {
             string podfilePath = Path.Combine(buildPath, "Podfile");
@@ -84,12 +112,16 @@ end
                     File.WriteAllText(podfilePath, podfileContent);
                     Debug.Log("[Superwall] Added SuperwallKit pod to existing Podfile");
                 }
-                else if (podfileContent.Contains(LegacySuperwallKitPod))
+                else
                 {
                     // An Append build keeps the Podfile from the last export. Without this, its old
-                    // requirement lets Podfile.lock hold a SuperwallKit the bridge can't compile against.
-                    File.WriteAllText(podfilePath, podfileContent.Replace(LegacySuperwallKitPod, SuperwallKitPod));
-                    Debug.Log("[Superwall] Updated the SuperwallKit requirement in the existing Podfile");
+                    // requirement lets Podfile.lock hold a SuperwallKit older than the bridge needs.
+                    string updated = UpdateSuperwallKitRequirement(podfileContent);
+                    if (updated != podfileContent)
+                    {
+                        File.WriteAllText(podfilePath, updated);
+                        Debug.Log("[Superwall] Updated the SuperwallKit requirement in the existing Podfile");
+                    }
                 }
             }
 
