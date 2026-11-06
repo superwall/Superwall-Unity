@@ -1,6 +1,23 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [0.4.1]
+
+### Enhancements
+* Android: subscription replacement. When a paywall's Purchase action is set to replace an existing subscription, a custom purchase controller now receives the subscription being replaced through a new `IPurchaseController.PurchaseFromGooglePlay(productId, basePlanId, offerId, ProductReplacement replacement, completion)` overload. Pass `replacement.OldPurchaseToken` and `replacement.Mode` to the billing flow's `SubscriptionUpdateParams` to upgrade, downgrade or switch the user's subscription instead of buying a second one. The overload has a default implementation that calls the existing four-argument method, so existing controllers compile and behave as before. Purchases without a custom controller handle the replacement automatically.
+* `EventType` gains the events SuperwallKit 4.18 and superwall-android 2.10 added: `TeleportOpen` and `TeleportReturn` (iOS), and `CustomerCenterOpen`, `CustomerCenterClose`, `CustomerCenterAction`, `CustomerCenterSurveyResponse` and `CustomerCenterRefundRequest`. Before, they reached `HandleSuperwallEvent` with a warning and the default `EventType`.
+
+### iOS
+* SuperwallKit 4.18 and later need Xcode 26 to build. The exported Xcode project no longer compiles with Xcode 16.
+* SuperwallKit 4.18 and later need iOS 15. If Target minimum iOS Version is lower, the generated Podfile now uses iOS 15 so `pod install` succeeds, and the build logs a warning to raise the game's own target.
+
+### Android
+* `LogScope.StoreKitManager` now enables the Android SDK's `billing` log scope, which replaces the deprecated `storeKitManager`. Android billing logs reach `SuperwallDelegate.HandleLog` with the scope `"billing"` instead of `"storeKitManager"`.
+
+### Dependencies
+* Android: pins the native SDK to 2.10.0 (was `2.8.7`). View the Android SDK release notes for [2.9.0](https://github.com/superwall/Superwall-Android/releases/tag/2.9.0) and [2.10.0](https://github.com/superwall/Superwall-Android/releases/tag/2.10.0).
+* iOS: pins the native SDK to 4.19.1. The generated Podfile already requires SuperwallKit `>= 4.19.1, < 5.0`; the CI harness now builds the bridge against exactly 4.19.1 (was `from: 4.12.10`). [View iOS SDK release notes](https://github.com/superwall/Superwall-iOS/releases/tag/4.19.1).
+
 ## [0.4.0]
 
 ### Enhancements

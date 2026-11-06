@@ -13,13 +13,13 @@ concurrency:
 jobs:
   ios:
     name: iOS bridge (SPM)
-    runs-on: macos-15
+    # SuperwallKit 4.18+ declares Swift tools 6.2, so it needs Xcode 26. On Xcode 16
+    # SPM can't resolve it at all (and a `from:` requirement silently falls back to 4.17).
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
       - name: Show Xcode + iOS SDK
-        # Float with whatever Xcode the macos-15 image ships (currently 16.x);
-        # SuperwallKit 4.15+ won't compile on Xcode 15.4.
         run: xcodebuild -version && xcodebuild -showsdks | grep -i ios
 
       - name: Cache SPM + DerivedData

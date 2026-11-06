@@ -11,7 +11,7 @@ let package = Package(
         .library(name: "SuperwallBridge", targets: ["SuperwallBridge"])
     ],
     dependencies: [
-        .package(url: "https://github.com/superwall/Superwall-iOS", from: "4.12.10")
+        .package(url: "https://github.com/superwall/Superwall-iOS", exact: "4.19.1")
     ],
     targets: [
         .target(

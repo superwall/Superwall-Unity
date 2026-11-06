@@ -292,7 +292,15 @@ namespace Superwall
         StripeCheckoutStart,
         StripeCheckoutSubmit,
         StripeCheckoutComplete,
-        StripeCheckoutFail
+        StripeCheckoutFail,
+        // SuperwallKit 4.18 / superwall-android 2.10 (teleport events are iOS only).
+        TeleportOpen,
+        TeleportReturn,
+        CustomerCenterOpen,
+        CustomerCenterClose,
+        CustomerCenterAction,
+        CustomerCenterSurveyResponse,
+        CustomerCenterRefundRequest
     }
 
     [Serializable]
