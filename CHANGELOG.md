@@ -8,7 +8,7 @@ All notable changes to this package will be documented in this file.
 * `EventType` gains the events SuperwallKit 4.18 and superwall-android 2.10 added: `TeleportOpen` and `TeleportReturn` (iOS), and `CustomerCenterOpen`, `CustomerCenterClose`, `CustomerCenterAction`, `CustomerCenterSurveyResponse` and `CustomerCenterRefundRequest`. Before, they reached `HandleSuperwallEvent` with a warning and the default `EventType`.
 
 ### iOS
-* SuperwallKit 4.18 and later need Xcode 26 to build. Building the exported Xcode project with Xcode 16 fails in `pod install`.
+* SuperwallKit 4.18 and later need Xcode 26 to build. The exported Xcode project no longer compiles with Xcode 16.
 * SuperwallKit 4.18 and later need iOS 15. If Target minimum iOS Version is lower, the generated Podfile now uses iOS 15 so `pod install` succeeds, and the build logs a warning to raise the game's own target.
 
 ### Android
