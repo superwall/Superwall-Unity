@@ -13,8 +13,11 @@ All notable changes to this package will be documented in this file.
 ### Android
 * Custom callbacks need the default in-window presentation. With `AndroidPaywallPresentation.Activity`, Unity is paused while the paywall is open, so each callback fails straight away and logs an error instead of leaving the paywall waiting.
 
+### Fixes
+* iOS paywalls now follow the orientations the game allows through `Screen.autorotateTo*` and `Screen.orientation`. Before, a landscape-only game could be rotated to portrait while a paywall was open, and stayed in portrait after it closed.
+
 ### Dependencies
-* iOS: the generated Podfile now requires SuperwallKit `>= 4.12.10, < 5.0`, the first versions with the custom callback API. A Podfile kept by an Append build is updated.
+* iOS: the generated Podfile now requires SuperwallKit `>= 4.19.1, < 5.0`. 4.12.10 added the custom callback API and 4.19.1 keeps paywalls to the game's orientations. A Podfile kept by an Append build is updated, unless you changed the SuperwallKit requirement by hand.
 
 ## [0.3.0]
 
