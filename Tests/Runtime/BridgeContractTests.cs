@@ -538,6 +538,110 @@ namespace Superwall.Tests
             BridgeCallbackHandler.Instance.PurchaseController = null;
         }
 
+        private static string CustomProductPurchaseRequest(string callbackId, bool withReplacement)
+        {
+            var data = new Dictionary<string, object>
+            {
+                { "productId", "web_annual" },
+                { "customTransactionId", "txn-abc" },
+                { "callbackId", callbackId }
+            };
+            if (withReplacement)
+            {
+                // Android only. Custom subscriptions have no Play purchase token.
+                data["replacement"] = new Dictionary<string, object>
+                {
+                    { "mode", "default" },
+                    { "oldProductId", "web_monthly" },
+                    { "oldPurchaseToken", null }
+                };
+            }
+            return Json.Serialize(new Dictionary<string, object>
+            {
+                { "method", "purchaseCustomProduct" },
+                { "data", data }
+            });
+        }
+
+        [UnityTest]
+        public IEnumerator PurchaseController_CustomProduct_ReachesPurchaseCustomProduct()
+        {
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+            var controller = new MockCustomProductPurchaseController();
+            BridgeCallbackHandler.Instance.PurchaseController = controller;
+
+            BridgeCallbackHandler.Instance.OnCallback(CustomProductPurchaseRequest("cb-custom", withReplacement: false));
+
+            Assert.IsNotNull(controller.Purchase, "Custom product purchase must reach PurchaseCustomProduct");
+            Assert.AreEqual("web_annual", controller.Purchase.ProductId);
+            Assert.AreEqual("txn-abc", controller.Purchase.CustomTransactionId);
+            Assert.IsNull(controller.Purchase.Replacement);
+
+            LogAssert.Expect(LogType.Log,
+                new Regex(@"RespondToPurchaseController\(callbackId=cb-custom,.*""type"":""purchased"""));
+            controller.PendingPurchase(PurchaseResult.Purchased());
+            yield return null;
+
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+        }
+
+        [UnityTest]
+        public IEnumerator PurchaseController_CustomProduct_ReceivesReplacement()
+        {
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+            var controller = new MockCustomProductPurchaseController();
+            BridgeCallbackHandler.Instance.PurchaseController = controller;
+
+            BridgeCallbackHandler.Instance.OnCallback(CustomProductPurchaseRequest("cb-custom-replace", withReplacement: true));
+
+            Assert.IsNotNull(controller.Purchase.Replacement);
+            Assert.AreEqual(ProductReplacement.ReplacementMode.Default, controller.Purchase.Replacement.Mode);
+            Assert.AreEqual("web_monthly", controller.Purchase.Replacement.OldProductId);
+            Assert.IsNull(controller.Purchase.Replacement.OldPurchaseToken);
+
+            controller.PendingPurchase(PurchaseResult.Cancelled());
+            yield return null;
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+        }
+
+        [UnityTest]
+        public IEnumerator PurchaseController_WithoutCustomProductSupport_FailsCustomProduct()
+        {
+            // Controllers that don't implement PurchaseCustomProduct must answer, not hang the paywall,
+            // and must not be sent the custom product as a store purchase.
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+            var controller = new MockPurchaseControllerContract();
+            BridgeCallbackHandler.Instance.PurchaseController = controller;
+
+            LogAssert.Expect(LogType.Log,
+                new Regex(@"RespondToPurchaseController\(callbackId=cb-custom-legacy,.*""type"":""failed"".*PurchaseCustomProduct"));
+            BridgeCallbackHandler.Instance.OnCallback(CustomProductPurchaseRequest("cb-custom-legacy", withReplacement: false));
+            yield return null;
+
+            Assert.IsNull(controller.PendingPurchase, "A custom product must not reach the store purchase methods");
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+        }
+
+        [UnityTest]
+        public IEnumerator PurchaseController_CustomProductThatThrows_RepliesFailed()
+        {
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+            var controller = new MockCustomProductPurchaseController { Throw = true };
+            BridgeCallbackHandler.Instance.PurchaseController = controller;
+
+            LogAssert.Expect(LogType.Error, new Regex("PurchaseCustomProduct threw: boom"));
+            LogAssert.Expect(LogType.Log,
+                new Regex(@"RespondToPurchaseController\(callbackId=cb-custom-throw,.*""type"":""failed"""));
+            BridgeCallbackHandler.Instance.OnCallback(CustomProductPurchaseRequest("cb-custom-throw", withReplacement: false));
+            yield return null;
+
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+        }
+
         [UnityTest]
         public IEnumerator PurchaseController_WithoutReplacementOverload_StillReceivesPurchase()
         {
@@ -698,6 +802,21 @@ namespace Superwall.Tests
             ProductId = productId;
             BasePlanId = basePlanId;
             Replacement = replacement;
+            PendingPurchase = completion;
+        }
+    }
+
+    /// <summary>
+    /// Purchase controller that sells custom products and records what it received.
+    /// </summary>
+    class MockCustomProductPurchaseController : MockPurchaseControllerContract, IPurchaseController
+    {
+        public CustomProductPurchase Purchase;
+
+        public void PurchaseCustomProduct(CustomProductPurchase purchase, System.Action<PurchaseResult> completion)
+        {
+            if (Throw) throw new System.InvalidOperationException("boom");
+            Purchase = purchase;
             PendingPurchase = completion;
         }
     }

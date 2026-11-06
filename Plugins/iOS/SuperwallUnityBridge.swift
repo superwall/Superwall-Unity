@@ -564,6 +564,28 @@ private class SuperwallUnityDelegate: SuperwallDelegate {
 
 // MARK: - Unity Purchase Controller
 
+/// The C# purchase controller method a purchase goes to, and the request BridgeCallbackHandler
+/// reads. `StoreProduct.isCustomProduct` isn't public, but SuperwallKit sets `customTransactionId`
+/// before it calls the purchase controller for a custom product (store "Custom" on the
+/// dashboard), and only for those, so it's what tells the two apart.
+func purchaseRequest(
+    productIdentifier: String,
+    customTransactionId: String?,
+    callbackId: String
+) -> (method: String, data: [String: Any]) {
+    if let customTransactionId {
+        return ("purchaseCustomProduct", [
+            "productId": productIdentifier,
+            "customTransactionId": customTransactionId,
+            "callbackId": callbackId
+        ])
+    }
+    return ("purchaseFromAppStore", [
+        "productId": productIdentifier,
+        "callbackId": callbackId
+    ])
+}
+
 private class UnityPurchaseController: PurchaseController {
     private var pendingPurchaseContinuations: [String: CheckedContinuation<PurchaseResult, Never>] = [:]
     private var pendingRestoreContinuations: [String: CheckedContinuation<RestorationResult, Never>] = [:]
@@ -577,10 +599,12 @@ private class UnityPurchaseController: PurchaseController {
             pendingPurchaseContinuations[callbackId] = continuation
             lock.unlock()
 
-            sendToUnity(method: "purchaseFromAppStore", data: [
-                "productId": product.productIdentifier,
-                "callbackId": callbackId
-            ])
+            let request = purchaseRequest(
+                productIdentifier: product.productIdentifier,
+                customTransactionId: product.customTransactionId,
+                callbackId: callbackId
+            )
+            sendToUnity(method: request.method, data: request.data)
         }
     }
 

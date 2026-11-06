@@ -146,6 +146,9 @@ namespace Superwall.Internal
                 case "purchaseFromGooglePlay":
                     HandlePurchaseFromGooglePlay(data);
                     break;
+                case "purchaseCustomProduct":
+                    HandlePurchaseCustomProduct(data);
+                    break;
                 case "restorePurchases":
                     HandleRestorePurchases(data);
                     break;
@@ -1002,15 +1005,7 @@ namespace Superwall.Internal
             var callbackId = GetString(data, "callbackId");
             if (!IsPurchaseRequestPending(callbackId)) return;
 
-            ProductReplacement replacement = null;
-            var replacementData = GetDict(data, "replacement");
-            if (replacementData != null)
-            {
-                replacement = new ProductReplacement(
-                    ProductReplacement.ParseMode(GetString(replacementData, "mode")),
-                    GetString(replacementData, "oldProductId"),
-                    GetString(replacementData, "oldPurchaseToken"));
-            }
+            var replacement = DeserializeReplacement(GetDict(data, "replacement"));
 
             var reply = CreatePurchaseReply(callbackId);
             try
@@ -1022,6 +1017,39 @@ namespace Superwall.Internal
                 Debug.LogError($"[Superwall] PurchaseFromGooglePlay threw: {e.Message}\n{e.StackTrace}");
                 reply(PurchaseResult.Failed(e.Message));
             }
+        }
+
+        private void HandlePurchaseCustomProduct(Dictionary<string, object> data)
+        {
+            if (PurchaseController == null) return;
+
+            var callbackId = GetString(data, "callbackId");
+            if (!IsPurchaseRequestPending(callbackId)) return;
+
+            var purchase = new CustomProductPurchase(
+                GetString(data, "productId"),
+                GetString(data, "customTransactionId"),
+                DeserializeReplacement(GetDict(data, "replacement")));
+
+            var reply = CreatePurchaseReply(callbackId);
+            try
+            {
+                PurchaseController.PurchaseCustomProduct(purchase, reply);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[Superwall] PurchaseCustomProduct threw: {e.Message}\n{e.StackTrace}");
+                reply(PurchaseResult.Failed(e.Message));
+            }
+        }
+
+        private static ProductReplacement DeserializeReplacement(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            return new ProductReplacement(
+                ProductReplacement.ParseMode(GetString(data, "mode")),
+                GetString(data, "oldProductId"),
+                GetString(data, "oldPurchaseToken"));
         }
 
         private void HandleRestorePurchases(Dictionary<string, object> data)
