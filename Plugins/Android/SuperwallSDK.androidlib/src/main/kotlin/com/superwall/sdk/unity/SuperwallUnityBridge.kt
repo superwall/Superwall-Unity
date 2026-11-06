@@ -1093,7 +1093,7 @@ class SuperwallUnityBridge {
                             "configmanager" -> LogScope.configManager
                             "identitymanager" -> LogScope.identityManager
                             "localizationmanager" -> LogScope.localizationManager
-                            "storekitmanager" -> LogScope.storeKitManager
+                            "storekitmanager", "billing" -> LogScope.billing
                             "bouncebutton" -> LogScope.bounceButton
                             "device" -> LogScope.device
                             else -> null

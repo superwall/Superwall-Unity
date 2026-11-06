@@ -1,10 +1,14 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
-## [Unreleased]
+## [0.4.1]
 
 ### Dependencies
 * Android: pins the native SDK to 2.10.0 (was `2.8.7`). [View Android SDK release notes](https://github.com/superwall/Superwall-Android/releases/tag/2.10.0).
+* iOS: pins the native SDK to 4.19.1. The generated Podfile already requires SuperwallKit `>= 4.19.1, < 5.0`; the CI harness now builds the bridge against exactly 4.19.1 (was `from: 4.12.10`). [View iOS SDK release notes](https://github.com/superwall/Superwall-iOS/releases/tag/4.19.1).
+
+### Android
+* `LogScope.StoreKitManager` now enables the Android SDK's `billing` log scope, which replaces the deprecated `storeKitManager`. Android billing logs reach `SuperwallDelegate.HandleLog` with the scope `"billing"` instead of `"storeKitManager"`.
 
 ## [0.4.0]
 
