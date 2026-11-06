@@ -490,6 +490,75 @@ namespace Superwall.Tests
                 }
             });
 
+        private static string ReplacementPurchaseRequest(string callbackId) =>
+            Json.Serialize(new Dictionary<string, object>
+            {
+                { "method", "purchaseFromGooglePlay" },
+                { "data", new Dictionary<string, object>
+                    {
+                        { "productId", "com.app.annual" },
+                        { "basePlanId", "annual" },
+                        { "offerId", "" },
+                        { "callbackId", callbackId },
+                        { "replacement", new Dictionary<string, object>
+                            {
+                                { "mode", "charge_prorated" },
+                                { "oldProductId", "com.app.monthly" },
+                                { "oldPurchaseToken", "token-123" }
+                            }
+                        }
+                    }
+                }
+            });
+
+        [UnityTest]
+        public IEnumerator PurchaseController_ReplacementOverload_ReceivesReplacement()
+        {
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+            var controller = new MockReplacementPurchaseController();
+            BridgeCallbackHandler.Instance.PurchaseController = controller;
+
+            BridgeCallbackHandler.Instance.OnCallback(ReplacementPurchaseRequest("cb-replace"));
+
+            Assert.AreEqual("com.app.annual", controller.ProductId);
+            Assert.AreEqual("annual", controller.BasePlanId);
+            Assert.IsNotNull(controller.Replacement);
+            Assert.AreEqual(ProductReplacement.ReplacementMode.ChargeProrated, controller.Replacement.Mode);
+            Assert.AreEqual("com.app.monthly", controller.Replacement.OldProductId);
+            Assert.AreEqual("token-123", controller.Replacement.OldPurchaseToken);
+
+            // A normal purchase carries no replacement.
+            BridgeCallbackHandler.Instance.OnCallback(PurchaseRequest("purchaseFromGooglePlay", "cb-plain"));
+            Assert.AreEqual("com.app.monthly", controller.ProductId);
+            Assert.IsNull(controller.Replacement);
+
+            controller.PendingPurchase(PurchaseResult.Purchased());
+            yield return null;
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+        }
+
+        [UnityTest]
+        public IEnumerator PurchaseController_WithoutReplacementOverload_StillReceivesPurchase()
+        {
+            // Controllers written before 2.9.0 implement only the 4-argument method. The
+            // replacement overload's default implementation must route to it.
+            BridgeCallbackHandler.Initialize();
+            yield return null;
+            var controller = new MockPurchaseControllerContract();
+            BridgeCallbackHandler.Instance.PurchaseController = controller;
+
+            BridgeCallbackHandler.Instance.OnCallback(ReplacementPurchaseRequest("cb-legacy"));
+            Assert.IsNotNull(controller.PendingPurchase, "Legacy controller must receive the request");
+
+            LogAssert.Expect(LogType.Log,
+                new Regex(@"RespondToPurchaseController\(callbackId=cb-legacy,.*""type"":""purchased"""));
+            controller.PendingPurchase(PurchaseResult.Purchased());
+            yield return null;
+
+            BridgeCallbackHandler.Instance.PurchaseController = null;
+        }
+
         [UnityTest]
         public IEnumerator PurchaseController_GooglePlayThrows_RepliesFailed()
         {
@@ -611,6 +680,25 @@ namespace Superwall.Tests
         {
             if (Throw) throw new System.InvalidOperationException("boom");
             PendingRestore = completion;
+        }
+    }
+
+    /// <summary>
+    /// Purchase controller that implements the replacement overload and records what it received.
+    /// </summary>
+    class MockReplacementPurchaseController : MockPurchaseControllerContract, IPurchaseController
+    {
+        public string ProductId;
+        public string BasePlanId;
+        public ProductReplacement Replacement;
+
+        public void PurchaseFromGooglePlay(string productId, string basePlanId, string offerId,
+            ProductReplacement replacement, System.Action<PurchaseResult> completion)
+        {
+            ProductId = productId;
+            BasePlanId = basePlanId;
+            Replacement = replacement;
+            PendingPurchase = completion;
         }
     }
 

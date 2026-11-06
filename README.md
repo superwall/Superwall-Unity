@@ -214,6 +214,28 @@ public class MyPurchaseController : IPurchaseController
 Superwall.Configure("api-key", purchaseController: new MyPurchaseController());
 ```
 
+### Subscription replacement (Android)
+
+When a paywall's Purchase action is set to replace an existing subscription, Superwall passes the
+subscription being replaced to an overload of `PurchaseFromGooglePlay`. Implement it to upgrade,
+downgrade or switch the user's Google Play subscription instead of buying a second one:
+
+```csharp
+public void PurchaseFromGooglePlay(string productId, string basePlanId, string offerId,
+    ProductReplacement replacement, Action<PurchaseResult> completion)
+{
+    if (replacement != null)
+    {
+        // Pass replacement.OldPurchaseToken and replacement.Mode to the billing flow's
+        // SubscriptionUpdateParams (RevenueCat: oldProductId + googleReplacementMode).
+    }
+    // ...purchase, then call completion(...)
+}
+```
+
+`replacement` is null for normal purchases. Implementing the overload is optional: by default it
+calls the four-argument `PurchaseFromGooglePlay` and ignores the replacement.
+
 ## User Identity
 
 ```csharp

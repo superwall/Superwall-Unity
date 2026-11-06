@@ -10,7 +10,6 @@ import com.superwall.sdk.delegate.PurchaseResult
 import com.superwall.sdk.delegate.RestorationResult
 import com.superwall.sdk.delegate.subscription_controller.PurchaseController
 import com.superwall.sdk.models.attribution.AttributionProvider
-import com.android.billingclient.api.ProductDetails
 import kotlinx.coroutines.CompletableDeferred
 import com.superwall.sdk.identity.IdentityOptions
 import com.superwall.sdk.identity.identify
@@ -45,6 +44,7 @@ import com.superwall.sdk.store.abstractions.product.StoreProductType
 import com.superwall.sdk.store.abstractions.transactions.StoreTransaction
 import com.superwall.sdk.store.abstractions.transactions.StoreTransactionType
 import com.superwall.sdk.store.transactions.RestoreType
+import com.superwall.sdk.store.ProductReplacement
 import kotlinx.coroutines.*
 import kotlin.time.Duration.Companion.seconds
 import org.json.JSONArray
@@ -1225,12 +1225,24 @@ class SuperwallUnityBridge {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?): Boolean = size > 32
         }
 
+        // The SDK calls this overload for every purchase (2.9.0+); the older ones are never
+        // reached once it is overridden. `replacement` is non-null only when the paywall's
+        // Purchase action replaces an existing subscription the user has.
         override suspend fun purchase(
             activity: Activity,
-            productDetails: ProductDetails,
+            product: StoreProduct,
             basePlanId: String?,
-            offerId: String?
+            offerId: String?,
+            replacement: ProductReplacement?
         ): PurchaseResult {
+            // Custom (non-Play) products have no ProductDetails. The C# controller only
+            // purchases Play products, so fail as the SDK's default implementation does.
+            val productDetails = product.rawStoreProduct?.underlyingProductDetails
+                ?: return PurchaseResult.Failed(
+                    "The Unity purchase controller does not handle custom products " +
+                        "(${product.fullIdentifier})."
+                )
+
             val callbackId = java.util.UUID.randomUUID().toString()
             val deferred = CompletableDeferred<PurchaseResult>()
             pendingPurchases[callbackId] = deferred
@@ -1240,6 +1252,13 @@ class SuperwallUnityBridge {
                 put("basePlanId", basePlanId ?: "")
                 put("offerId", offerId ?: "")
                 put("callbackId", callbackId)
+                if (replacement != null) {
+                    put("replacement", JSONObject().apply {
+                        put("mode", replacement.mode.rawName)
+                        put("oldProductId", replacement.oldProductId ?: JSONObject.NULL)
+                        put("oldPurchaseToken", replacement.oldPurchaseToken ?: JSONObject.NULL)
+                    })
+                }
             })
             if (!sent) {
                 // C# never got the request, so no reply will ever come.
