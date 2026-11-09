@@ -12,9 +12,10 @@
 #      implements the Unity side and pushes it onto the same PR.
 #
 # Android is pinned exactly in Plugins/Android/.../build.gradle. iOS is pinned
-# in two places that this workflow keeps identical: the Podfile lines written
-# by Editor/SuperwallPostBuildProcessor.cs, and the SPM requirement in
-# ci~/ios-harness/Package.swift. A floating requirement (`~> 4.0`, `from:`) is
+# in two places that this workflow keeps identical: SuperwallKitMinimumVersion
+# in Editor/SuperwallPostBuildProcessor.cs (the Swift package requirement added
+# to the exported Xcode project, up to the next major), and the SPM requirement
+# in ci~/ios-harness/Package.swift. A floating harness requirement (`from:`) is
 # replaced with an exact version on the first bump.
 #
 # Secrets:
@@ -123,11 +124,11 @@ jobs:
           if [ "$PLATFORM" = android ]; then
             CURRENT="$(sed -nE "s/.*com\.superwall\.sdk:superwall-android:([^']+)'.*/\1/p" Plugins/Android/SuperwallSDK.androidlib/build.gradle)"
           else
-            # Exact SPM pin once one exists; otherwise the Podfile requirement,
-            # which starts out as a floating range (`~> 4.0`).
+            # Exact SPM pin in the harness once one exists; otherwise the
+            # minimum version the post-build processor requires.
             CURRENT="$(sed -nE 's/.*Superwall-iOS", exact: "([^"]+)".*/\1/p' ci~/ios-harness/Package.swift)"
             if [ -z "$CURRENT" ]; then
-              CURRENT="$(sed -nE "s/.*pod 'SuperwallKit', '([^']+)'.*/\1/p" Editor/SuperwallPostBuildProcessor.cs | head -1)"
+              CURRENT="$(sed -nE 's/.*SuperwallKitMinimumVersion = "([^"]+)".*/\1/p' Editor/SuperwallPostBuildProcessor.cs | head -1)"
             fi
           fi
           [ -n "$CURRENT" ] || { echo "::error::Could not read the current $PLATFORM pin"; exit 1; }
@@ -178,9 +179,9 @@ jobs:
             sed -i -E "s/superwall-android $CURRENT/superwall-android $VERSION/" \
               Plugins/Android/SuperwallSDK.androidlib/build.gradle
           else
-            # Podfile text (three copies) and the SPM harness must name the
-            # same version. `from:` becomes `exact:` the first time.
-            sed -i -E "s/(pod 'SuperwallKit', ')[^']+'/\1$VERSION'/" \
+            # The exported project's package requirement and the SPM harness
+            # must name the same version. `from:` becomes `exact:` the first time.
+            sed -i -E "s/(SuperwallKitMinimumVersion = \")[^\"]+\"/\1$VERSION\"/" \
               Editor/SuperwallPostBuildProcessor.cs
             sed -i -E "s#(Superwall-iOS\", )(from|exact): \"[^\"]+\"#\1exact: \"$VERSION\"#" \
               ci~/ios-harness/Package.swift
@@ -242,7 +243,7 @@ jobs:
           if [ "$PLATFORM" = android ]; then
             PLATFORM_NOTES="The Android bridge is Plugins/Android/SuperwallSDK.androidlib (Kotlin). Compile it with \`(cd ci~/android-harness && gradle :SuperwallSDK:assembleRelease -PagpVersion=8.5.2 --no-daemon)\`. C# cannot be compiled on this runner (no Unity); say so in the PR description."
           else
-            PLATFORM_NOTES="The iOS bridge is Plugins/iOS/SuperwallUnityBridge.swift. The Podfile lines live in Editor/SuperwallPostBuildProcessor.cs and the SPM pin in ci~/ios-harness/Package.swift; keep them on the same version. This runner is Linux: Swift cannot be compiled here, and neither can C# (no Unity). Be careful and precise, and say in the PR description that iOS was not compiled locally."
+            PLATFORM_NOTES="The iOS bridge is Plugins/iOS/SuperwallUnityBridge.swift. The Swift package requirement of the exported Xcode project is SuperwallKitMinimumVersion in Editor/SuperwallPostBuildProcessor.cs (asserted by Tests/Editor/SwiftPackageRequirementTests.cs) and the harness pin is in ci~/ios-harness/Package.swift; keep them on the same version. This runner is Linux: Swift cannot be compiled here, and neither can C# (no Unity). Be careful and precise, and say in the PR description that iOS was not compiled locally."
           fi
           DELIM="PROMPT_$(openssl rand -hex 8)"
           {
