@@ -17,6 +17,9 @@ namespace Superwall.Editor
         public const string SuperwallKitPackageUrl = "https://github.com/superwall/Superwall-iOS";
         public const string SuperwallKitProduct = "SuperwallKit";
 
+        // The resource bundle SPM builds for SuperwallKit's SuperwallKit target.
+        public const string SuperwallKitResourceBundle = "SuperwallKit_SuperwallKit.bundle";
+
         // The exported Xcode project requires SuperwallKit from this version up to the next major.
         // 4.12.10 added the custom callback API the bridge calls. 4.19.1 keeps a paywall to the
         // orientations the game allows (Screen.autorotateTo*), and stops it leaving the game
@@ -118,6 +121,17 @@ namespace Superwall.Editor
                 Debug.Log($"[Superwall] Added the SuperwallKit Swift package (from {SuperwallKitMinimumVersion} up to the next major version) to UnityFramework");
             }
 
+            // Xcode builds SuperwallKit's resource bundle (Core Data model, receipt certificates,
+            // images, localizations, privacy manifest) but doesn't copy it into UnityFramework, and
+            // SuperwallKit stops with "unable to find bundle named SuperwallKit_SuperwallKit" when
+            // it configures. Copy it in, where Bundle.module looks for a package linked into a
+            // framework. Not in the app target: Unity as a Library apps don't have it.
+            if (!project.ContainsFileByProjectPath(SuperwallKitResourceBundle))
+            {
+                string bundleGuid = project.AddFile(SuperwallKitResourceBundle, SuperwallKitResourceBundle, PBXSourceTree.Build);
+                project.AddFileToBuild(unityFrameworkGuid, bundleGuid);
+            }
+
             // Enable modules and Swift for the framework target
             project.SetBuildProperty(unityFrameworkGuid, "CLANG_ENABLE_MODULES", "YES");
             project.SetBuildProperty(unityFrameworkGuid, "SWIFT_VERSION", "5.0");
@@ -146,7 +160,10 @@ namespace Superwall.Editor
         }
 
         // An Append build over an export from a version that used CocoaPods keeps its Podfile and
-        // Pods integration. Drop SuperwallKit from it so it is not linked twice.
+        // Pods integration. Drop SuperwallKit from it and reinstall the pods, or the workspace still
+        // builds the old SuperwallKit pod and links it next to the Swift package: Xcode reports no
+        // error, and the app gets two copies of every SuperwallKit class.
+        // Runs before the processor opens project.pbxproj, because pod install rewrites it.
         private static void RemovePodFromAppendedBuild(string buildPath)
         {
             string podfilePath = Path.Combine(buildPath, "Podfile");
@@ -157,12 +174,96 @@ namespace Superwall.Editor
             if (updated == podfile) return;
 
             File.WriteAllText(podfilePath, updated);
-            Debug.LogWarning(
-                "[Superwall] SuperwallKit now comes from Swift Package Manager, so its pod was removed from the Podfile " +
-                "this Append build kept. Update the Pods integration before building in Xcode:\n\n" +
-                $"    cd \"{buildPath}\" && pod install\n\n" +
-                "If no other pods are left, run 'pod deintegrate' instead and open Unity-iPhone.xcodeproj, " +
-                "or make a Replace build.");
+            Debug.Log("[Superwall] SuperwallKit now comes from Swift Package Manager, so its pod was removed from the Podfile this Append build kept. Running pod install to update the Pods integration.");
+
+            string failure = RunPodInstall(buildPath);
+            if (failure != null)
+            {
+                Debug.LogWarning(
+                    $"[Superwall] {failure} Until the Pods integration is updated, Unity-iPhone.xcworkspace still links " +
+                    "the old SuperwallKit pod next to the Swift package. Run:\n\n" +
+                    $"    cd \"{buildPath}\" && pod install\n\n" +
+                    "or make a Replace build.");
+            }
+        }
+
+        // Returns null on success, or why pod install didn't run or failed.
+        private static string RunPodInstall(string buildPath)
+        {
+            string podPath = LocatePodExecutable();
+            if (podPath == null) return "Could not find the CocoaPods 'pod' executable.";
+
+            var process = new System.Diagnostics.Process();
+            process.StartInfo.FileName = "/bin/bash";
+            // Login shell so the user's PATH from ~/.zshrc / ~/.bash_profile is loaded (rbenv/asdf shims, Homebrew).
+            process.StartInfo.Arguments = $"-l -c \"cd '{buildPath}' && '{podPath}' install\"";
+            process.StartInfo.UseShellExecute = false;
+            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardError = true;
+            // Some Ruby installs (rbenv/asdf) misbehave when these env vars are inherited from Unity.
+            process.StartInfo.EnvironmentVariables.Remove("MONO_PATH");
+            process.StartInfo.EnvironmentVariables.Remove("MONO_CFG_DIR");
+            process.StartInfo.EnvironmentVariables.Remove("DYLD_FALLBACK_LIBRARY_PATH");
+            process.StartInfo.EnvironmentVariables.Remove("DYLD_LIBRARY_PATH");
+            // CocoaPods crashes with Encoding::CompatibilityError under non-UTF-8 locales;
+            // Unity launched from Finder inherits launchd's empty LANG.
+            process.StartInfo.EnvironmentVariables["LANG"] = "en_US.UTF-8";
+            process.StartInfo.EnvironmentVariables["LC_ALL"] = "en_US.UTF-8";
+
+            try
+            {
+                process.Start();
+                string output = process.StandardOutput.ReadToEnd();
+                string error = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode == 0)
+                {
+                    Debug.Log($"[Superwall] pod install completed.\n{output}");
+                    return null;
+                }
+                return $"pod install failed (exit code {process.ExitCode}):\n{error}{output}\n";
+            }
+            catch (System.Exception e)
+            {
+                return $"Could not run pod install ({e.Message}).";
+            }
+        }
+
+        private static string LocatePodExecutable()
+        {
+            string home = System.Environment.GetEnvironmentVariable("HOME") ?? "";
+            string[] candidates =
+            {
+                "/usr/local/bin/pod",
+                "/opt/homebrew/bin/pod",
+                Path.Combine(home, ".rbenv/shims/pod"),
+                Path.Combine(home, ".asdf/shims/pod"),
+                "/usr/bin/pod",
+            };
+            foreach (var path in candidates)
+            {
+                if (!string.IsNullOrEmpty(path) && File.Exists(path)) return path;
+            }
+
+            // Fall back to `command -v pod` under a login shell.
+            try
+            {
+                var which = new System.Diagnostics.Process();
+                which.StartInfo.FileName = "/bin/bash";
+                which.StartInfo.Arguments = "-l -c \"command -v pod\"";
+                which.StartInfo.UseShellExecute = false;
+                which.StartInfo.RedirectStandardOutput = true;
+                which.StartInfo.RedirectStandardError = true;
+                which.Start();
+                string result = which.StandardOutput.ReadToEnd().Trim();
+                which.WaitForExit();
+                if (which.ExitCode == 0 && !string.IsNullOrEmpty(result) && File.Exists(result))
+                {
+                    return result;
+                }
+            }
+            catch { }
+            return null;
         }
 #endif
     }
