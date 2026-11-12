@@ -161,6 +161,9 @@ namespace Superwall.Internal
                 case "onPresent":
                     HandleOnPresent(data);
                     break;
+                case "onWillDismiss":
+                    HandleOnWillDismiss(data);
+                    break;
                 case "onDismiss":
                     HandleOnDismiss(data);
                     break;
@@ -848,6 +851,8 @@ namespace Superwall.Internal
                     return PaywallSkippedReason.NoAudienceMatch;
                 case "placementnotfound":
                     return PaywallSkippedReason.PlacementNotFound;
+                case "userissubscribed":
+                    return PaywallSkippedReason.UserIsSubscribed;
                 default:
                     return PaywallSkippedReason.NoAudienceMatch;
             }
@@ -1300,6 +1305,17 @@ namespace Superwall.Internal
             var paywallInfoDict = GetDict(data, "paywallInfo");
             PaywallInfo paywallInfo = DeserializePaywallInfo(paywallInfoDict);
             handler.OnPresent(paywallInfo);
+        }
+
+        private void HandleOnWillDismiss(Dictionary<string, object> data)
+        {
+            var handlerId = GetString(data, "handlerId");
+            if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
+
+            var handler = _presentationHandlers[handlerId];
+            if (handler.OnWillDismiss == null) return;
+
+            handler.OnWillDismiss(DeserializePaywallInfo(GetDict(data, "paywallInfo")), DeserializePaywallResult(GetDict(data, "result")));
         }
 
         private void HandleOnDismiss(Dictionary<string, object> data)

@@ -277,6 +277,9 @@ namespace Superwall.Tests
                 "onesignalId", "fbAnonId", "firebaseAppInstanceId", "iterableUserId", "iterableCampaignId",
                 "iterableTemplateId", "mixpanelDistinctId", "mparticleId", "clevertapId", "airshipChannelId",
                 "kochavaDeviceId", "tenjinId", "posthogUserId", "customerioId", "appstackId",
+                // Platform-only names: the bridge for the other platform drops them.
+                "firebaseInstallationId", "singularDeviceId", "airbridgeId", "meta", "amplitude", "mixpanel",
+                "googleAds", "googleAppSetId", "custom",
             };
 
             var attributes = new Dictionary<IntegrationAttribute, string>();

@@ -7,6 +7,11 @@ namespace Superwall
     public class PaywallPresentationHandler
     {
         public Action<PaywallInfo> OnPresent;
+        /// <summary>
+        /// iOS only. Runs when the paywall is about to be dismissed, before <see cref="OnDismiss"/>. Never called on
+        /// Android, whose SDK has no such callback.
+        /// </summary>
+        public Action<PaywallInfo, PaywallResult> OnWillDismiss;
         public Action<PaywallInfo, PaywallResult> OnDismiss;
         public Action<string> OnError;
         public Action<PaywallSkippedReason> OnSkip;

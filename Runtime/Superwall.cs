@@ -8,6 +8,12 @@ namespace Superwall
 {
     public class Superwall
     {
+        /// <summary>The name the native SDKs report this wrapper under.</summary>
+        internal const string PlatformWrapper = "Unity";
+
+        /// <summary>This package's version, as in package.json. A test keeps the two in step.</summary>
+        internal const string PackageVersion = "0.6.0";
+
         private static Superwall _shared;
         private ISuperwallDelegate _delegate;
         private IPurchaseController _purchaseController;
@@ -65,6 +71,8 @@ namespace Superwall
             }
 
             CallNative_Configure(apiKey, optionsJson, hasPurchaseController, completionCallbackId);
+            // Tags this app's events and device attributes as coming from the Unity SDK, as the other wrappers do.
+            CallNative_SetPlatformWrapper(PlatformWrapper, PackageVersion);
             return _shared;
         }
 
@@ -137,6 +145,28 @@ namespace Superwall
                 serializable[IntegrationAttributeKey(kvp.Key)] = kvp.Value;
             }
             CallNative_SetIntegrationAttributes(Json.Serialize(serializable));
+        }
+
+        /// <summary>
+        /// The integration attributes set with <see cref="SetIntegrationAttribute"/> and
+        /// <see cref="SetIntegrationAttributes"/>, keyed by the native SDKs' names (<c>adjustId</c>).
+        /// </summary>
+        public Dictionary<string, string> IntegrationAttributes
+        {
+            get
+            {
+                var result = new Dictionary<string, string>();
+                string json = CallNative_GetIntegrationAttributes();
+                if (string.IsNullOrEmpty(json)) return result;
+                if (Json.Deserialize(json) is Dictionary<string, object> dict)
+                {
+                    foreach (var kvp in dict)
+                    {
+                        if (kvp.Value != null) result[kvp.Key] = kvp.Value.ToString();
+                    }
+                }
+                return result;
+            }
         }
 
         /// <summary>
@@ -223,6 +253,22 @@ namespace Superwall
             CallNative_GetCustomerInfo(callbackId);
         }
 
+        /// <summary>
+        /// Fetches the customer info from Superwall's servers instead of returning the copy the SDK has, for example
+        /// after a purchase made outside the app. Android has no such call and returns the same as
+        /// <see cref="GetCustomerInfo"/>.
+        /// </summary>
+        public void RefreshCustomerInfo(Action<CustomerInfo> completion)
+        {
+            string callbackId = Guid.NewGuid().ToString();
+            BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
+            {
+                var dict = string.IsNullOrEmpty(json) ? null : Json.Deserialize(json) as Dictionary<string, object>;
+                completion(BridgeCallbackHandler.DeserializeCustomerInfo(dict) ?? new CustomerInfo());
+            });
+            CallNative_RefreshCustomerInfo(callbackId);
+        }
+
         // ------- Subscription Status -------
 
         public SubscriptionStatus SubscriptionStatus
@@ -292,9 +338,104 @@ namespace Superwall
             CallNative_PreloadPaywallsForPlacements(Json.Serialize(placementNames));
         }
 
+        /// <summary>Handles a deep link sent to the app. Needs <see cref="Configure"/> first; prefer <see cref="HandleDeepLink(Uri)"/>.</summary>
         public bool HandleDeepLink(string url)
         {
             return CallNative_HandleDeepLink(url);
+        }
+
+        /// <summary>
+        /// Handles a deep link sent to the app: paywall previews, web checkout redemption codes, Superwall universal
+        /// links and <c>deepLink_open</c> triggers. Returns whether Superwall handles the link, so other handlers can
+        /// take the rest. Unlike the instance method it can be called before <see cref="Configure"/>, for a link that
+        /// launched the app: the native SDKs keep it until they're configured.
+        /// </summary>
+        public static bool HandleDeepLink(Uri url)
+        {
+            if (url == null) return false;
+            return CallNative_HandleDeepLink(url.OriginalString);
+        }
+
+        // ------- Event Tracking and Ad Consent -------
+
+        /// <summary>
+        /// Which events the SDK sends to Superwall. Set it at any time, for example to
+        /// <see cref="global::Superwall.EventTrackingBehavior.None"/> when the user declines data collection.
+        /// </summary>
+        public EventTrackingBehavior EventTrackingBehavior
+        {
+            get
+            {
+                return ParseEnumOrDefault(CallNative_GetEventTrackingBehavior(), global::Superwall.EventTrackingBehavior.All);
+            }
+            set { CallNative_SetEventTrackingBehavior(SerializeEventTrackingBehavior(value)); }
+        }
+
+        /// <summary>
+        /// The user's consent for advertising use of their data, passed on with the conversions Superwall uploads to
+        /// Google Ads and Meta. Set it from your consent flow. Until it's set, the getter returns both as granted.
+        /// </summary>
+        public AdConsent AdConsent
+        {
+            get
+            {
+                var result = new AdConsent();
+                if (Json.Deserialize(CallNative_GetAdConsent() ?? "") is Dictionary<string, object> dict)
+                {
+                    result.AdUserData = ParseEnumOrDefault(dict.ContainsKey("adUserData") ? dict["adUserData"] as string : null, AdConsentStatus.Granted);
+                    result.AdPersonalization = ParseEnumOrDefault(dict.ContainsKey("adPersonalization") ? dict["adPersonalization"] as string : null, AdConsentStatus.Granted);
+                }
+                return result;
+            }
+            set { CallNative_SetAdConsent(Json.Serialize(SerializeAdConsent(value ?? new AdConsent()))); }
+        }
+
+        // ------- Appearance -------
+
+        /// <summary>Shows paywalls in light or dark mode, whatever the system setting. Pass null to follow the system again.</summary>
+        public void SetInterfaceStyle(InterfaceStyle? style)
+        {
+            CallNative_SetInterfaceStyle(style.HasValue ? (style.Value == InterfaceStyle.Dark ? "dark" : "light") : null);
+        }
+
+        // ------- Notifications -------
+
+        /// <summary>Cancels the local notifications Superwall scheduled, such as free trial reminders, that haven't been delivered.</summary>
+        public void CancelAllScheduledNotifications()
+        {
+            CallNative_CancelAllScheduledNotifications();
+        }
+
+        /// <summary>
+        /// Android only. Registers the device's Firebase Cloud Messaging token, so Superwall can send it push
+        /// notifications. Call it at launch and whenever the token changes. Does nothing on iOS.
+        /// </summary>
+        public void SetPushToken(string token)
+        {
+            if (token == null) return;
+            CallNative_SetPushToken(token);
+        }
+
+        /// <summary>Android only. Stops Superwall sending this device push notifications. Does nothing on iOS.</summary>
+        public void OptOutOfNotifications()
+        {
+            CallNative_SetNotificationsEnabled(false);
+        }
+
+        /// <summary>Android only. Lets Superwall send this device push notifications again. Does nothing on iOS.</summary>
+        public void OptInToNotifications()
+        {
+            CallNative_SetNotificationsEnabled(true);
+        }
+
+        /// <summary>
+        /// Android only. Reports that the user opened a push notification, passing the notification's data
+        /// (<c>RemoteMessage.Data</c>). Notifications Superwall didn't send are ignored. Does nothing on iOS.
+        /// </summary>
+        public void HandleNotificationOpen(Dictionary<string, string> data)
+        {
+            if (data == null) return;
+            CallNative_HandleNotificationOpen(Json.Serialize(data));
         }
 
         public void TogglePaywallSpinner(bool isHidden)
@@ -744,6 +885,27 @@ namespace Superwall
             }
         }
 
+        private static T ParseEnumOrDefault<T>(string value, T defaultValue) where T : struct
+        {
+            return !string.IsNullOrEmpty(value) && Enum.TryParse<T>(value, true, out var parsed) ? parsed : defaultValue;
+        }
+
+        // The native SDKs' names: all, superwallOnly, none.
+        internal static string SerializeEventTrackingBehavior(EventTrackingBehavior behavior)
+        {
+            var name = behavior.ToString();
+            return char.ToLowerInvariant(name[0]) + name.Substring(1);
+        }
+
+        internal static Dictionary<string, object> SerializeAdConsent(AdConsent consent)
+        {
+            return new Dictionary<string, object>
+            {
+                { "adUserData", consent.AdUserData == AdConsentStatus.Denied ? "denied" : "granted" },
+                { "adPersonalization", consent.AdPersonalization == AdConsentStatus.Denied ? "denied" : "granted" }
+            };
+        }
+
         // Also used by BridgeCallbackHandler for the `product` carried on delegate events.
         internal static StoreProduct DeserializeStoreProduct(Dictionary<string, object> dict)
         {
@@ -849,12 +1011,32 @@ namespace Superwall
                     paywalls["timeoutAfter"] = options.Paywalls.TimeoutAfter.Value;
                 }
                 paywalls["androidPresentation"] = options.Paywalls.AndroidPresentation.ToString();
+                paywalls["optimisticLoading"] = options.Paywalls.OptimisticLoading;
+                if (options.Paywalls.NotificationPermissionsDenied != null)
+                {
+                    var denied = options.Paywalls.NotificationPermissionsDenied;
+                    paywalls["notificationPermissionsDenied"] = new Dictionary<string, object>
+                    {
+                        { "title", denied.Title },
+                        { "message", denied.Message },
+                        { "actionButtonTitle", denied.ActionButtonTitle },
+                        { "closeButtonTitle", denied.CloseButtonTitle }
+                    };
+                }
 
                 dict["paywalls"] = paywalls;
             }
 
             dict["networkEnvironment"] = options.NetworkEnvironment.ToString();
+#pragma warning disable CS0618 // Still sent for apps that set it; the bridges apply eventTrackingBehavior after it.
             dict["isExternalDataCollectionEnabled"] = options.IsExternalDataCollectionEnabled;
+#pragma warning restore CS0618
+            if (options.EventTrackingBehavior.HasValue)
+                dict["eventTrackingBehavior"] = SerializeEventTrackingBehavior(options.EventTrackingBehavior.Value);
+            if (options.AdConsent != null) dict["adConsent"] = SerializeAdConsent(options.AdConsent);
+            if (options.StoreKitVersion.HasValue)
+                dict["storeKitVersion"] = options.StoreKitVersion.Value == global::Superwall.StoreKitVersion.StoreKit1 ? "storeKit1" : "storeKit2";
+            dict["enableExperimentalDeviceVariables"] = options.EnableExperimentalDeviceVariables;
             if (options.LocaleIdentifier != null) dict["localeIdentifier"] = options.LocaleIdentifier;
             dict["isGameControllerEnabled"] = options.IsGameControllerEnabled;
             dict["passIdentifiersToPlayStore"] = options.PassIdentifiersToPlayStore;
@@ -1370,6 +1552,141 @@ namespace Superwall
             SuperwallBridgeAndroid.SetLocalResources(resourcesJson);
 #else
             Debug.Log($"[Superwall] SetLocalResources({resourcesJson})");
+#endif
+        }
+
+        private static void CallNative_SetPlatformWrapper(string wrapper, string version)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_SetPlatformWrapper(wrapper, version);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.SetPlatformWrapper(wrapper, version);
+#else
+            Debug.Log($"[Superwall] SetPlatformWrapper({wrapper}, {version})");
+#endif
+        }
+
+        private static string CallNative_GetIntegrationAttributes()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            return SuperwallBridgeiOS._SuperwallBridge_GetIntegrationAttributes();
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            return SuperwallBridgeAndroid.GetIntegrationAttributes();
+#else
+            Debug.Log("[Superwall] GetIntegrationAttributes()");
+            return "{}";
+#endif
+        }
+
+        private static void CallNative_RefreshCustomerInfo(string callbackId)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_RefreshCustomerInfo(callbackId);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.RefreshCustomerInfo(callbackId);
+#else
+            Debug.Log("[Superwall] RefreshCustomerInfo()");
+#endif
+        }
+
+        private static string CallNative_GetEventTrackingBehavior()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            return SuperwallBridgeiOS._SuperwallBridge_GetEventTrackingBehavior();
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            return SuperwallBridgeAndroid.GetEventTrackingBehavior();
+#else
+            Debug.Log("[Superwall] GetEventTrackingBehavior()");
+            return "all";
+#endif
+        }
+
+        private static void CallNative_SetEventTrackingBehavior(string behavior)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_SetEventTrackingBehavior(behavior);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.SetEventTrackingBehavior(behavior);
+#else
+            Debug.Log($"[Superwall] SetEventTrackingBehavior({behavior})");
+#endif
+        }
+
+        private static string CallNative_GetAdConsent()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            return SuperwallBridgeiOS._SuperwallBridge_GetAdConsent();
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            return SuperwallBridgeAndroid.GetAdConsent();
+#else
+            Debug.Log("[Superwall] GetAdConsent()");
+            return null;
+#endif
+        }
+
+        private static void CallNative_SetAdConsent(string adConsentJson)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_SetAdConsent(adConsentJson);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.SetAdConsent(adConsentJson);
+#else
+            Debug.Log($"[Superwall] SetAdConsent({adConsentJson})");
+#endif
+        }
+
+        private static void CallNative_SetInterfaceStyle(string style)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_SetInterfaceStyle(style);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.SetInterfaceStyle(style);
+#else
+            Debug.Log($"[Superwall] SetInterfaceStyle({style})");
+#endif
+        }
+
+        private static void CallNative_CancelAllScheduledNotifications()
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_CancelAllScheduledNotifications();
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.CancelAllScheduledNotifications();
+#else
+            Debug.Log("[Superwall] CancelAllScheduledNotifications()");
+#endif
+        }
+
+        private static void CallNative_SetPushToken(string token)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_SetPushToken(token);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.SetPushToken(token);
+#else
+            Debug.Log("[Superwall] SetPushToken()");
+#endif
+        }
+
+        private static void CallNative_SetNotificationsEnabled(bool enabled)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_SetNotificationsEnabled(enabled);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.SetNotificationsEnabled(enabled);
+#else
+            Debug.Log($"[Superwall] SetNotificationsEnabled({enabled})");
+#endif
+        }
+
+        private static void CallNative_HandleNotificationOpen(string dataJson)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_HandleNotificationOpen(dataJson);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.HandleNotificationOpen(dataJson);
+#else
+            Debug.Log($"[Superwall] HandleNotificationOpen({dataJson})");
 #endif
         }
     }

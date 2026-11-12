@@ -36,7 +36,26 @@ namespace Superwall
         Transactions,
         PaywallViewController,
         Cache,
-        All
+        All,
+        // Appended, never reordered. Each is applied only on the platform whose SDK has it and ignored on the other.
+        /// <summary>iOS only.</summary>
+        Analytics,
+        WebEntitlements,
+        /// <summary>iOS only.</summary>
+        GrantedEntitlements,
+        CustomerCenter,
+        /// <summary>Android only.</summary>
+        CustomerInfo,
+        /// <summary>Android only.</summary>
+        JsEvaluator,
+        /// <summary>Android only.</summary>
+        PaywallTransactions,
+        /// <summary>Android only.</summary>
+        NativePurchaseController,
+        /// <summary>Android only.</summary>
+        DeepLinks,
+        /// <summary>Android only. The same scope <see cref="StoreKitManager"/> turns on there.</summary>
+        Billing
     }
 
     [Serializable]
@@ -129,7 +148,9 @@ namespace Superwall
     {
         Holdout,
         NoAudienceMatch,
-        PlacementNotFound
+        PlacementNotFound,
+        /// <summary>Android only. The user is subscribed and the placement's paywall is only shown to non-subscribers.</summary>
+        UserIsSubscribed
     }
 
     [Serializable]
@@ -140,7 +161,9 @@ namespace Superwall
         Paddle,
         PlayStore,
         Superwall,
-        Other
+        Other,
+        /// <summary>A product sold through your own payment system: its store is set to Custom on the dashboard.</summary>
+        Custom
     }
 
     [Serializable]
@@ -199,7 +222,24 @@ namespace Superwall
         TenjinId,
         PosthogUserId,
         CustomerioId,
-        AppstackId
+        AppstackId,
+        // Appended, never reordered. Each is set only on the platform whose SDK has it and ignored on the other.
+        /// <summary>iOS only.</summary>
+        FirebaseInstallationId,
+        SingularDeviceId,
+        AirbridgeId,
+        /// <summary>Android only.</summary>
+        Meta,
+        /// <summary>Android only.</summary>
+        Amplitude,
+        /// <summary>Android only.</summary>
+        Mixpanel,
+        /// <summary>Android only.</summary>
+        GoogleAds,
+        /// <summary>Android only.</summary>
+        GoogleAppSetId,
+        /// <summary>Android only.</summary>
+        Custom
     }
 
     [Serializable]
@@ -301,6 +341,41 @@ namespace Superwall
         CustomerCenterAction,
         CustomerCenterSurveyResponse,
         CustomerCenterRefundRequest
+    }
+
+    /// <summary>Which events the SDK sends to Superwall.</summary>
+    [Serializable]
+    public enum EventTrackingBehavior
+    {
+        /// <summary>Every event. The default.</summary>
+        All,
+        /// <summary>Only Superwall's own events: no events you track, trigger fires or user attribute updates.</summary>
+        SuperwallOnly,
+        /// <summary>No events at all, for example when the user declines data collection.</summary>
+        None
+    }
+
+    [Serializable]
+    public enum AdConsentStatus
+    {
+        Granted,
+        Denied
+    }
+
+    /// <summary>Whether paywalls show in light or dark mode, regardless of the system setting.</summary>
+    [Serializable]
+    public enum InterfaceStyle
+    {
+        Light,
+        Dark
+    }
+
+    /// <summary>iOS only. The StoreKit version SuperwallKit uses.</summary>
+    [Serializable]
+    public enum StoreKitVersion
+    {
+        StoreKit1,
+        StoreKit2
     }
 
     [Serializable]

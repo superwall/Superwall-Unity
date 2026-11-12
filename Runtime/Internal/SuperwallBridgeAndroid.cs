@@ -253,6 +253,66 @@ namespace Superwall.Internal
         {
             Bridge.Call("setLocalResources", resourcesJson);
         }
+
+        internal static void SetPlatformWrapper(string wrapper, string version)
+        {
+            Bridge.Call("setPlatformWrapper", wrapper, version);
+        }
+
+        internal static string GetIntegrationAttributes()
+        {
+            return Bridge.Call<string>("getIntegrationAttributes");
+        }
+
+        internal static void RefreshCustomerInfo(string callbackId)
+        {
+            Bridge.Call("refreshCustomerInfo", callbackId);
+        }
+
+        internal static string GetEventTrackingBehavior()
+        {
+            return Bridge.Call<string>("getEventTrackingBehavior");
+        }
+
+        internal static void SetEventTrackingBehavior(string behavior)
+        {
+            Bridge.Call("setEventTrackingBehavior", behavior);
+        }
+
+        internal static string GetAdConsent()
+        {
+            return Bridge.Call<string>("getAdConsent");
+        }
+
+        internal static void SetAdConsent(string adConsentJson)
+        {
+            Bridge.Call("setAdConsent", adConsentJson);
+        }
+
+        internal static void SetInterfaceStyle(string style)
+        {
+            Bridge.Call("setInterfaceStyle", style);
+        }
+
+        internal static void CancelAllScheduledNotifications()
+        {
+            Bridge.Call("cancelAllScheduledNotifications");
+        }
+
+        internal static void SetPushToken(string token)
+        {
+            Bridge.Call("setPushToken", token);
+        }
+
+        internal static void SetNotificationsEnabled(bool enabled)
+        {
+            Bridge.Call("setNotificationsEnabled", enabled);
+        }
+
+        internal static void HandleNotificationOpen(string dataJson)
+        {
+            Bridge.Call("handleNotificationOpen", dataJson);
+        }
     }
 #endif
 }

@@ -1,5 +1,6 @@
 import Foundation
 import SuperwallKit
+import UserNotifications
 
 // UnitySendMessage is a C function provided by the Unity runtime at link time.
 @_silgen_name("UnitySendMessage")
@@ -86,6 +87,8 @@ private func parseLogScope(_ str: String) -> LogScope? {
     case "paywallviewcontroller": return .paywallViewController
     case "cache": return .cache
     case "webentitlements": return .webEntitlements
+    case "grantedentitlements": return .grantedEntitlements
+    case "customercenter": return .customerCenter
     case "all": return .all
     default: return nil
     }
@@ -115,7 +118,41 @@ private func parseIntegrationAttribute(_ str: String) -> IntegrationAttribute? {
     case "posthogUserId": return .posthogUserId
     case "customerioId": return .customerioId
     case "appstackId": return .appstackId
+    case "singularDeviceId": return .singularDeviceId
+    case "airbridgeId": return .airbridgeId
     default: return nil
+    }
+}
+
+private func parseEventTrackingBehavior(_ str: String?) -> EventTrackingBehavior? {
+    switch str {
+    case "all": return .all
+    case "superwallOnly": return .superwallOnly
+    case "none": return EventTrackingBehavior.none
+    default: return nil
+    }
+}
+
+private func serializeEventTrackingBehavior(_ behavior: EventTrackingBehavior) -> String {
+    switch behavior {
+    case .all: return "all"
+    case .superwallOnly: return "superwallOnly"
+    case .none: return "none"
+    @unknown default: return "all"
+    }
+}
+
+private func parseAdConsent(_ dict: [String: Any]) -> AdConsent {
+    func status(_ key: String) -> AdConsentStatus {
+        return dict[key] as? String == "denied" ? .denied : .granted
+    }
+    return AdConsent(adUserData: status("adUserData"), adPersonalization: status("adPersonalization"))
+}
+
+private func serializeAdConsentStatus(_ status: AdConsentStatus) -> String {
+    switch status {
+    case .denied: return "denied"
+    default: return "granted"
     }
 }
 
@@ -927,6 +964,22 @@ public func _SuperwallBridge_Configure(
         if let externalData = dict["isExternalDataCollectionEnabled"] as? Bool {
             options?.isExternalDataCollectionEnabled = externalData
         }
+        // After the deprecated flag above, which it replaces.
+        if let behavior = parseEventTrackingBehavior(dict["eventTrackingBehavior"] as? String) {
+            options?.eventTrackingBehavior = behavior
+        }
+        // Only when C# set one: assigning marks consent as given by the app, which outranks a TCF banner.
+        if let adConsent = dict["adConsent"] as? [String: Any] {
+            options?.adConsent = parseAdConsent(adConsent)
+        }
+        switch dict["storeKitVersion"] as? String {
+        case "storeKit1": options?.storeKitVersion = .storeKit1
+        case "storeKit2": options?.storeKitVersion = .storeKit2
+        default: break
+        }
+        if let experimental = dict["enableExperimentalDeviceVariables"] as? Bool {
+            options?.enableExperimentalDeviceVariables = experimental
+        }
         if let gameController = dict["isGameControllerEnabled"] as? Bool {
             options?.isGameControllerEnabled = gameController
         }
@@ -1013,8 +1066,16 @@ public func _SuperwallBridge_Configure(
             if let overrides = paywalls["overrideProductsByName"] as? [String: String] {
                 options?.paywalls.overrideProductsByName = overrides
             }
+            if let denied = paywalls["notificationPermissionsDenied"] as? [String: Any] {
+                let alert = PaywallOptions.NotificationPermissionsDenied()
+                if let title = denied["title"] as? String { alert.title = title }
+                if let message = denied["message"] as? String { alert.message = message }
+                if let action = denied["actionButtonTitle"] as? String { alert.actionButtonTitle = action }
+                if let close = denied["closeButtonTitle"] as? String { alert.closeButtonTitle = close }
+                options?.paywalls.notificationPermissionsDenied = alert
+            }
         }
-        // Note: passIdentifiersToPlayStore is Android-only, skipped on iOS.
+        // Note: passIdentifiersToPlayStore and paywalls.optimisticLoading are Android-only, skipped on iOS.
         // Note: useMockReviews is not available in SuperwallKit for iOS, skipped.
     }
 
@@ -1307,27 +1368,19 @@ public func _SuperwallBridge_RegisterPlacement(
                 "paywallInfo": serializePaywallInfo(info)
             ])
         }
-        handler?.onDismiss { info, result in
-            var data: [String: Any] = [
+        handler?.onWillDismiss { info, result in
+            sendToUnity(method: "onWillDismiss", data: [
                 "handlerId": hId!,
-                "paywallInfo": serializePaywallInfo(info)
-            ]
-            switch result {
-            // `PaywallResult.purchased` carries a `StoreProduct`, not a `String` — the old binding name
-            // was misleading. Passing the object straight into the payload meant JSON serialization
-            // received a non-JSON leaf and fell back to its debug description, so Unity was handed
-            // "<SWKStoreProduct: 0x14f80a980>" as `productId`. Any consumer matching that against a store
-            // catalogue (revenue reporting, receipt lookup) finds nothing and silently drops the purchase.
-            case .purchased(let product):
-                data["result"] = ["type": "purchased", "productId": product.productIdentifier]
-            case .declined:
-                data["result"] = ["type": "declined"]
-            case .restored:
-                data["result"] = ["type": "restored"]
-            @unknown default:
-                data["result"] = ["type": "declined"]
-            }
-            sendToUnity(method: "onDismiss", data: data)
+                "paywallInfo": serializePaywallInfo(info),
+                "result": serializePaywallResult(result)
+            ])
+        }
+        handler?.onDismiss { info, result in
+            sendToUnity(method: "onDismiss", data: [
+                "handlerId": hId!,
+                "paywallInfo": serializePaywallInfo(info),
+                "result": serializePaywallResult(result)
+            ])
         }
         handler?.onError { error in
             sendToUnity(method: "onError", data: [
@@ -1367,6 +1420,24 @@ public func _SuperwallBridge_RegisterPlacement(
 
     if let cbId = cbId {
         sendAsyncResponse(callbackId: cbId, data: ["success": true])
+    }
+}
+
+private func serializePaywallResult(_ result: PaywallResult) -> [String: Any] {
+    switch result {
+    // `PaywallResult.purchased` carries a `StoreProduct`, not a `String` — the old binding name
+    // was misleading. Passing the object straight into the payload meant JSON serialization
+    // received a non-JSON leaf and fell back to its debug description, so Unity was handed
+    // "<SWKStoreProduct: 0x14f80a980>" as `productId`. Any consumer matching that against a store
+    // catalogue (revenue reporting, receipt lookup) finds nothing and silently drops the purchase.
+    case .purchased(let product):
+        return ["type": "purchased", "productId": product.productIdentifier]
+    case .declined:
+        return ["type": "declined"]
+    case .restored:
+        return ["type": "restored"]
+    @unknown default:
+        return ["type": "declined"]
     }
 }
 
@@ -1700,3 +1771,76 @@ public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CC
         NSLog("[SuperwallUnityBridge] SetLocalResources called after Configure — on iOS, local resources must be set before Configure or they will not be picked up.")
     }
 }
+
+@_cdecl("_SuperwallBridge_SetPlatformWrapper")
+public func _SuperwallBridge_SetPlatformWrapper(_ wrapper: UnsafePointer<CChar>, _ version: UnsafePointer<CChar>) {
+    guard Superwall.isInitialized else { return }
+    Superwall.shared.setPlatformWrapper(String(cString: wrapper), version: String(cString: version))
+}
+
+@_cdecl("_SuperwallBridge_GetIntegrationAttributes")
+public func _SuperwallBridge_GetIntegrationAttributes() -> UnsafePointer<CChar>? {
+    return toCString(toJsonString(Superwall.shared.integrationAttributes))
+}
+
+@_cdecl("_SuperwallBridge_RefreshCustomerInfo")
+public func _SuperwallBridge_RefreshCustomerInfo(_ callbackId: UnsafePointer<CChar>) {
+    let cbId = String(cString: callbackId)
+    Task {
+        let info = await Superwall.shared.refreshCustomerInfo()
+        sendAsyncResponse(callbackId: cbId, data: serializeCustomerInfo(info))
+    }
+}
+
+@_cdecl("_SuperwallBridge_GetEventTrackingBehavior")
+public func _SuperwallBridge_GetEventTrackingBehavior() -> UnsafePointer<CChar>? {
+    return toCString(serializeEventTrackingBehavior(Superwall.shared.eventTrackingBehavior))
+}
+
+@_cdecl("_SuperwallBridge_SetEventTrackingBehavior")
+public func _SuperwallBridge_SetEventTrackingBehavior(_ behavior: UnsafePointer<CChar>) {
+    guard let parsed = parseEventTrackingBehavior(String(cString: behavior)) else { return }
+    Superwall.shared.eventTrackingBehavior = parsed
+}
+
+@_cdecl("_SuperwallBridge_GetAdConsent")
+public func _SuperwallBridge_GetAdConsent() -> UnsafePointer<CChar>? {
+    let consent = Superwall.shared.adConsent
+    return toCString(toJsonString([
+        "adUserData": serializeAdConsentStatus(consent.adUserData),
+        "adPersonalization": serializeAdConsentStatus(consent.adPersonalization)
+    ]))
+}
+
+@_cdecl("_SuperwallBridge_SetAdConsent")
+public func _SuperwallBridge_SetAdConsent(_ adConsentJson: UnsafePointer<CChar>) {
+    guard let dict = parseJson(String(cString: adConsentJson)) else { return }
+    Superwall.shared.adConsent = parseAdConsent(dict)
+}
+
+@_cdecl("_SuperwallBridge_SetInterfaceStyle")
+public func _SuperwallBridge_SetInterfaceStyle(_ style: UnsafePointer<CChar>?) {
+    // C# passes null to follow the system setting again.
+    switch toSwiftString(style) {
+    case "light": Superwall.shared.setInterfaceStyle(to: .light)
+    case "dark": Superwall.shared.setInterfaceStyle(to: .dark)
+    default: Superwall.shared.setInterfaceStyle(to: nil)
+    }
+}
+
+@_cdecl("_SuperwallBridge_CancelAllScheduledNotifications")
+public func _SuperwallBridge_CancelAllScheduledNotifications() {
+    // SuperwallKit's counterpart of Android's cancelAllScheduledNotifications().
+    UNUserNotificationCenter.current().removeAllPendingSuperwallNotificationRequests()
+}
+
+// Push notifications through Superwall are Android only (Firebase Cloud Messaging). These accept the
+// calls so the DllImport symbols resolve, and do nothing.
+@_cdecl("_SuperwallBridge_SetPushToken")
+public func _SuperwallBridge_SetPushToken(_ token: UnsafePointer<CChar>) {}
+
+@_cdecl("_SuperwallBridge_SetNotificationsEnabled")
+public func _SuperwallBridge_SetNotificationsEnabled(_ enabled: Bool) {}
+
+@_cdecl("_SuperwallBridge_HandleNotificationOpen")
+public func _SuperwallBridge_HandleNotificationOpen(_ dataJson: UnsafePointer<CChar>) {}

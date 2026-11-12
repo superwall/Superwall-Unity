@@ -3,6 +3,24 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
+### Enhancements
+* Adds `EventTrackingBehavior` (`All`, `SuperwallOnly` or `None`) to choose which events the SDK sends to Superwall. Set it with `SuperwallOptions.EventTrackingBehavior` when configuring, or at any time with `Superwall.Shared.EventTrackingBehavior`, for example to stop all events when the user declines data collection. `SuperwallOptions.IsExternalDataCollectionEnabled` is deprecated in its favour; it keeps working and is ignored when `EventTrackingBehavior` is set.
+* Adds `AdConsent`, the user's consent for advertising use of their data, which Superwall passes on with the conversions it uploads to Google Ads and Meta. Set it with `SuperwallOptions.AdConsent` or `Superwall.Shared.AdConsent` from your consent flow. Left unset, the SDKs use the answer stored by an IAB TCF consent banner when GDPR applies, and otherwise report consent as granted.
+* Adds `Superwall.Shared.IntegrationAttributes`, the attributes set with `SetIntegrationAttribute` and `SetIntegrationAttributes`.
+* Adds `Superwall.Shared.SetInterfaceStyle(InterfaceStyle?)` to show paywalls in light or dark mode whatever the system setting. Pass `null` to follow the system again.
+* Adds `Superwall.Shared.CancelAllScheduledNotifications()` to cancel the local notifications Superwall scheduled, such as free trial reminders.
+* Adds `Superwall.Shared.RefreshCustomerInfo(completion)`, which fetches the customer info from Superwall's servers on iOS. Android has no such call and completes with the same as `GetCustomerInfo`.
+* Adds a static `Superwall.HandleDeepLink(Uri)`, which works before `Configure`, so a deep link that launched the app can be handed over before the SDK is configured. The instance method needs `Superwall.Shared`, which is null until then.
+* Android: adds `SetPushToken`, `OptOutOfNotifications`, `OptInToNotifications` and `HandleNotificationOpen` for push notifications sent through Superwall with Firebase Cloud Messaging. They do nothing on iOS.
+* Adds `SuperwallOptions.StoreKitVersion` (iOS only) and `SuperwallOptions.EnableExperimentalDeviceVariables`.
+* Adds `PaywallOptions.NotificationPermissionsDenied` (iOS only), the alert shown when a paywall asks for notification permission the user has denied. It's `null` by default, which shows no alert, as in SuperwallKit.
+* Adds `PaywallOptions.OptimisticLoading` (Android only) to show a paywall before its products have loaded.
+* Adds `PaywallPresentationHandler.OnWillDismiss` (iOS only), called when the paywall is about to be dismissed.
+* Adds `PaywallSkippedReason.UserIsSubscribed` (Android only).
+* Adds the `Analytics`, `GrantedEntitlements` (iOS only), `WebEntitlements`, `CustomerCenter`, and `CustomerInfo`, `JsEvaluator`, `PaywallTransactions`, `NativePurchaseController`, `DeepLinks` and `Billing` (Android only) log scopes.
+* Adds the `SingularDeviceId` and `AirbridgeId` integration attributes, plus `FirebaseInstallationId` (iOS only) and `Meta`, `Amplitude`, `Mixpanel`, `GoogleAds`, `GoogleAppSetId` and `Custom` (Android only).
+* The native SDKs now report the Unity SDK and its version with the app's device attributes, as the other Superwall wrappers do.
+
 ### Fixes
 * `SetIntegrationAttribute` and `SetIntegrationAttributes` did nothing on either platform: C# sent the enum member's name (`AdjustId`) and both native bridges only accept the SDKs' own names (`adjustId`), so every call was dropped. They now reach the native SDKs. A null value removes the attribute, as natively. On Android each call now changes only the attributes passed; the Android SDK replaces the whole set on every call, so the bridge merges into the current set to match iOS.
 * `CustomerInfo.Subscriptions` and `CustomerInfo.NonSubscriptions` were always null, from `GetCustomerInfo` and from `CustomerInfoDidChange`. Both platforms now send every transaction, with dates as epoch milliseconds like the entitlement dates.
@@ -23,6 +41,7 @@ All notable changes to this package will be documented in this file.
 * Android: a `GetProducts` call that fails now logs the error instead of silently returning no products.
 
 ### Behaviour changes
+* Android: a paywall skipped because the user is subscribed now reaches `PaywallPresentationHandler.OnSkip` as `PaywallSkippedReason.UserIsSubscribed`. Before, it arrived as `NoAudienceMatch`.
 * `PaywallOptions.ShouldShowWebPurchaseConfirmationAlert` now defaults to `true`, as in SuperwallKit. Before, passing any `SuperwallOptions` turned the iOS web purchase confirmation alert off. Set it to `false` to keep it off.
 * A new `Entitlement` is now active (`IsActive` defaults to `true`), as `Entitlement(id:)` is natively. `SubscriptionStatus.CreateActive(new List<Entitlement> { new Entitlement { Id = "pro" } })` used to be sent as active with no entitlements, because the setter skips inactive ones.
 * `PaywallOptions.RestoreFailed` now sends only the texts you changed. Android shows its translation of each text left at its default; before, the English defaults always replaced them.

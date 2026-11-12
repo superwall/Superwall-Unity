@@ -61,6 +61,12 @@ var options = new SuperwallOptions
     // Logging
     Logging = new Logging { Level = LogLevel.Debug },
 
+    // Which events are sent to Superwall (All, SuperwallOnly, None). Null keeps the default, All.
+    EventTrackingBehavior = EventTrackingBehavior.All,
+
+    // Ad consent from your consent flow. Null leaves it to an IAB TCF banner, or granted.
+    AdConsent = new AdConsent { AdUserData = AdConsentStatus.Granted, AdPersonalization = AdConsentStatus.Denied },
+
     // Paywall behavior
     Paywalls = new PaywallOptions
     {
@@ -347,8 +353,22 @@ Superwall.Shared.GetProducts(new List<string> { "monthly", "annual" }, (products
 Superwall.Shared.PreloadAllPaywalls();
 Superwall.Shared.PreloadPaywallsForPlacements(new List<string> { "onboarding", "upgrade" });
 
-// Deep links
-Superwall.Shared.HandleDeepLink("https://example.com/link");
+// Deep links. The static overload also works before Configure, for a link that launched the app.
+Superwall.HandleDeepLink(new Uri("https://example.com/link"));
+
+// Event tracking and ad consent, for example after the user answers your consent prompt
+Superwall.Shared.EventTrackingBehavior = EventTrackingBehavior.None;
+Superwall.Shared.AdConsent = new AdConsent { AdUserData = AdConsentStatus.Denied, AdPersonalization = AdConsentStatus.Denied };
+
+// Paywalls in dark mode, or null to follow the system
+Superwall.Shared.SetInterfaceStyle(InterfaceStyle.Dark);
+
+// Cancel the local notifications Superwall scheduled (free trial reminders)
+Superwall.Shared.CancelAllScheduledNotifications();
+
+// Push notifications through Superwall (Android only; they do nothing on iOS)
+Superwall.Shared.SetPushToken(fcmToken);
+Superwall.Shared.HandleNotificationOpen(remoteMessageData);
 
 // Dismiss current paywall
 Superwall.Shared.Dismiss();
@@ -387,7 +407,14 @@ Superwall.Shared.LocaleIdentifier = "en_US";
 | `SetUserAttributes(dict)` | Set user attributes |
 | `GetUserAttributes()` | Get user attributes |
 | `PreloadAllPaywalls()` | Preload all paywalls |
-| `HandleDeepLink(url)` | Handle a deep link |
+| `HandleDeepLink(Uri)` | Handle a deep link (static, works before `Configure`) |
+| `HandleDeepLink(url)` | Handle a deep link (needs `Configure` first) |
+| `EventTrackingBehavior` | Get/set which events are sent to Superwall |
+| `AdConsent` | Get/set the user's ad consent |
+| `IntegrationAttributes` | The integration attributes set |
+| `SetInterfaceStyle(style)` | Show paywalls in light or dark mode, or `null` for the system setting |
+| `CancelAllScheduledNotifications()` | Cancel Superwall's scheduled local notifications |
+| `SetPushToken(token)`, `OptOutOfNotifications()`, `OptInToNotifications()`, `HandleNotificationOpen(data)` | Push notifications through Superwall (Android only) |
 | `Dismiss()` | Dismiss current paywall |
 | `IsPaywallPresented` | Whether a paywall is showing |
 | `IsConfigured` | Whether SDK is configured |
@@ -399,6 +426,7 @@ Superwall.Shared.LocaleIdentifier = "en_US";
 | `ConfirmAllAssignments(callback)` | Confirm all experiment assignments |
 | `RestorePurchases(callback)` | Restore purchases |
 | `GetCustomerInfo(callback)` | Get customer info |
+| `RefreshCustomerInfo(callback)` | Fetch customer info from Superwall's servers (iOS; on Android the same as `GetCustomerInfo`) |
 | `GetDeviceAttributes(callback)` | Get device attributes |
 | `ShowAlert(title?, message?, ...)` | Show alert on current paywall (Android only; iOS calls `onClose` at once) |
 | `RefreshConfiguration()` | Force config refresh |

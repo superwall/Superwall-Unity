@@ -4,6 +4,9 @@ import android.app.Activity
 import android.net.Uri
 import com.unity3d.player.UnityPlayer
 import com.superwall.sdk.Superwall
+import com.superwall.sdk.config.options.AdConsent
+import com.superwall.sdk.config.options.AdConsentStatus
+import com.superwall.sdk.config.options.EventTrackingBehavior
 import com.superwall.sdk.config.options.SuperwallOptions
 import com.superwall.sdk.delegate.SuperwallDelegate
 import com.superwall.sdk.delegate.PurchaseResult
@@ -23,6 +26,7 @@ import com.superwall.sdk.store.abstractions.product.receipt.LatestSubscriptionSt
 import com.superwall.sdk.models.entitlements.SubscriptionStatus
 import com.superwall.sdk.models.triggers.Experiment
 import com.superwall.sdk.models.customer.CustomerInfo
+import com.superwall.sdk.network.device.InterfaceStyle
 import com.superwall.sdk.paywall.presentation.CustomCallback
 import com.superwall.sdk.paywall.presentation.CustomCallbackResult
 import com.superwall.sdk.paywall.presentation.PaywallInfo
@@ -723,6 +727,63 @@ class SuperwallUnityBridge {
         } catch (_: JSONException) {}
     }
 
+    fun setPlatformWrapper(wrapper: String, version: String) {
+        // configure() returns early, leaving no instance, when Unity has no activity yet.
+        if (!Superwall.initialized) return
+        Superwall.instance.setPlatformWrapper(wrapper, version)
+    }
+
+    fun getIntegrationAttributes(): String = JSONObject(Superwall.instance.integrationAttributes as Map<*, *>).toString()
+
+    // The Android SDK has no call that fetches customer info again; it keeps it current itself.
+    fun refreshCustomerInfo(callbackId: String) = getCustomerInfo(callbackId)
+
+    fun getEventTrackingBehavior(): String = Superwall.instance.eventTrackingBehavior.description
+
+    fun setEventTrackingBehavior(behavior: String) {
+        Superwall.instance.eventTrackingBehavior = parseEventTrackingBehavior(behavior) ?: return
+    }
+
+    // `Unspecified` (never set) reports both as granted, as the SDK does.
+    fun getAdConsent(): String {
+        val consent = Superwall.instance.adConsent as? AdConsent.Custom ?: AdConsent.Custom()
+        return JSONObject()
+            .put("adUserData", consent.adUserData.raw)
+            .put("adPersonalization", consent.adPersonalization.raw)
+            .toString()
+    }
+
+    fun setAdConsent(adConsentJson: String) {
+        try {
+            Superwall.instance.adConsent = parseAdConsent(JSONObject(adConsentJson))
+        } catch (_: JSONException) {}
+    }
+
+    fun setInterfaceStyle(style: String?) {
+        // C# passes null to follow the system setting again.
+        Superwall.instance.setInterfaceStyle(when (style) {
+            "light" -> InterfaceStyle.LIGHT
+            "dark" -> InterfaceStyle.DARK
+            else -> null
+        })
+    }
+
+    fun cancelAllScheduledNotifications() { Superwall.instance.cancelAllScheduledNotifications() }
+
+    fun setPushToken(token: String) { Superwall.instance.setPushToken(token) }
+
+    fun setNotificationsEnabled(enabled: Boolean) {
+        if (enabled) Superwall.instance.optInToNotifications() else Superwall.instance.optOutOfNotifications()
+    }
+
+    fun handleNotificationOpen(dataJson: String) {
+        try {
+            val json = JSONObject(dataJson)
+            val data = json.keys().asSequence().filter { !json.isNull(it) }.associateWith { json.getString(it) }
+            Superwall.instance.handleNotificationOpen(data)
+        } catch (_: JSONException) {}
+    }
+
     // --- Serialization ---
 
     private fun serializePaywallInfo(info: PaywallInfo) = JSONObject().apply {
@@ -1236,7 +1297,13 @@ class SuperwallUnityBridge {
         SuperwallOptions().apply {
             paywalls.presentationHost = com.superwall.sdk.config.options.PaywallOptions.PresentationHost.IN_WINDOW
             if (json.has("localeIdentifier")) localeIdentifier = json.getString("localeIdentifier")
+            @Suppress("DEPRECATION")
             if (json.has("isExternalDataCollectionEnabled")) isExternalDataCollectionEnabled = json.getBoolean("isExternalDataCollectionEnabled")
+            // After the deprecated flag above, which it replaces.
+            parseEventTrackingBehavior(json.optString("eventTrackingBehavior"))?.let { eventTrackingBehavior = it }
+            // Only when C# set one, so an unset consent still falls back to a TCF banner's answer.
+            json.optJSONObject("adConsent")?.let { adConsent = parseAdConsent(it) }
+            if (json.has("enableExperimentalDeviceVariables")) enableExperimentalDeviceVariables = json.getBoolean("enableExperimentalDeviceVariables")
             if (json.has("isGameControllerEnabled")) isGameControllerEnabled = json.getBoolean("isGameControllerEnabled")
             if (json.has("passIdentifiersToPlayStore")) passIdentifiersToPlayStore = json.getBoolean("passIdentifiersToPlayStore")
             if (json.has("shouldObservePurchases")) shouldObservePurchases = json.getBoolean("shouldObservePurchases")
@@ -1287,6 +1354,7 @@ class SuperwallUnityBridge {
                     }
                 }
                 if (paywallsJson.has("useCachedTemplates")) paywalls.useCachedTemplates = paywallsJson.getBoolean("useCachedTemplates")
+                if (paywallsJson.has("optimisticLoading")) paywalls.optimisticLoading = paywallsJson.getBoolean("optimisticLoading")
                 if (paywallsJson.has("timeoutAfter")) paywalls.timeoutAfter = paywallsJson.getDouble("timeoutAfter").seconds
                 if (paywallsJson.has("androidPresentation")) {
                     paywalls.presentationHost = when (paywallsJson.getString("androidPresentation").lowercase()) {
@@ -1308,6 +1376,14 @@ class SuperwallUnityBridge {
             }
         }
     } catch (_: JSONException) { null }
+
+    internal fun parseEventTrackingBehavior(name: String?): EventTrackingBehavior? =
+        EventTrackingBehavior.entries.firstOrNull { it.description == name }
+
+    internal fun parseAdConsent(json: JSONObject): AdConsent.Custom {
+        fun status(key: String) = if (json.optString(key) == "denied") AdConsentStatus.Denied else AdConsentStatus.Granted
+        return AdConsent.Custom(adUserData = status("adUserData"), adPersonalization = status("adPersonalization"))
+    }
 
     // Every `LogScope` C# has an Android counterpart for. The view controller scopes have Android names
     // of their own, and `StoreKitManager` turns on `billing`, which replaced Android's `storeKitManager`.
@@ -1334,6 +1410,13 @@ class SuperwallUnityBridge {
         "transactions" -> LogScope.transactions
         "paywallviewcontroller" -> LogScope.paywallView
         "cache" -> LogScope.cache
+        "webentitlements" -> LogScope.webEntitlements
+        "customercenter" -> LogScope.customerCenter
+        "customerinfo" -> LogScope.customerInfo
+        "jsevaluator" -> LogScope.jsEvaluator
+        "paywalltransactions" -> LogScope.paywallTransactions
+        "nativepurchasecontroller" -> LogScope.nativePurchaseController
+        "deeplinks" -> LogScope.deepLinks
         else -> null
     }
 

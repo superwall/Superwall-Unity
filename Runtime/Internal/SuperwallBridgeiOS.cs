@@ -142,6 +142,42 @@ namespace Superwall.Internal
 
         [DllImport("__Internal")]
         internal static extern void _SuperwallBridge_SetLocalResources(string resourcesJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetPlatformWrapper(string wrapper, string version);
+
+        [DllImport("__Internal")]
+        internal static extern string _SuperwallBridge_GetIntegrationAttributes();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_RefreshCustomerInfo(string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern string _SuperwallBridge_GetEventTrackingBehavior();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetEventTrackingBehavior(string behavior);
+
+        [DllImport("__Internal")]
+        internal static extern string _SuperwallBridge_GetAdConsent();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetAdConsent(string adConsentJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetInterfaceStyle(string style);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_CancelAllScheduledNotifications();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetPushToken(string token);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetNotificationsEnabled(bool enabled);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_HandleNotificationOpen(string dataJson);
     }
 #endif
 }
