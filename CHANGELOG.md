@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
+## [Unreleased]
+
+### Dependencies
+* Android: pins the native SDK to 2.10.2 (was `2.10.0`). [View Android SDK release notes](https://github.com/superwall/Superwall-Android/releases/tag/2.10.2).
+
 ## [0.6.0]
 
 ### Breaking Changes
