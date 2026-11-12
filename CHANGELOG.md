@@ -3,6 +3,30 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+* `SetIntegrationAttribute` and `SetIntegrationAttributes` did nothing on either platform: C# sent the enum member's name (`AdjustId`) and both native bridges only accept the SDKs' own names (`adjustId`), so every call was dropped. They now reach the native SDKs. A null value removes the attribute, as natively. On Android each call now changes only the attributes passed; the Android SDK replaces the whole set on every call, so the bridge merges into the current set to match iOS.
+* `CustomerInfo.Subscriptions` and `CustomerInfo.NonSubscriptions` were always null, from `GetCustomerInfo` and from `CustomerInfoDidChange`. Both platforms now send every transaction, with dates as epoch milliseconds like the entitlement dates.
+* `SuperwallEventInfo` now carries the values of every event that has them: `PlacementName` and `Result` (trigger fire), `TriggeredPlacementName`, `Attempt` and `MissingProductIdentifiers` (paywall response and product loading), `Name` (custom placements), `Survey`, `SelectedOption` and `CustomResponse` (survey responses), `Status` (presentation requests), `DeepLinkUrl`, `DeviceAttributes`, `UserAttributes`, `IntegrationAttributes`, `UserEnrichment` and `DeviceEnrichment`, `Token` (iOS AdServices), `Message` (restore failures), `ReviewRequestedCount`, `Error` for the webview, product and resource load failures, and `PaywallInfo` for the webview load, Stripe checkout, teleport and page view events. Before, only the paywall open/close/decline and transaction events had any of them.
+* `RedemptionInfo.Ownership`, `.PurchaserInfo` and `.PaywallInfo` were always null in `DidRedeemLink`. Both platforms now send them.
+* `LatestPaywallInfo` returned only the identifier, name, URL, product IDs and experiment. It now has every field, like the `PaywallInfo` the delegate receives.
+* `Entitlements.Web` was always empty. Both platforms now send the web entitlements.
+* `HandleLog`'s `info` was always null. Both platforms now send it.
+* Setting a user attribute to null now removes it, as it does natively. Before, the attribute was kept with a null value. On Android, nested dictionaries and lists in user attributes and placement parameters now reach the SDK as maps and lists.
+* iOS: `Entitlement.Store` was always null, because the bridge sent the store's type name instead of the store. It now arrives as on Android.
+* iOS: `Survey.AssignmentKey` was always null. It is now sent, as on Android.
+* iOS: `SetLocalResources(null)` passed a null pointer to a parameter that can't take one. It now clears the resources.
+* Android: `StoreProduct` from `GetProducts` and events now has the period and trial period strings, `TrialPeriodEndDate`, `TrialPeriodEndDateString`, `RegionCode` and `Attributes`, which were only filled on iOS. Products in `TransactionStart`, `TransactionAbandon` and `TransactionComplete` events now carry every field instead of only the identifier.
+* Android: `GetPresentationResult` never called its completion when the native call failed. It now reports `PaywallNotAvailable`, as iOS does.
+* Android: `SuperwallOptions.Paywalls.OverrideProductsByName` was ignored by `Configure`. It is now applied.
+* Android: only 12 of the 22 `LogScope` values were applied; the others were dropped, and if none was left every scope was logged. Every value is now applied (`DebugViewController`, `LocalizationViewController` and `PaywallViewController` turn on the Android SDK's `debugView`, `localizationView` and `paywallView`).
+* Android: `HandleDeepLink` threw before `Configure`. It now calls the SDK's static handler, which keeps the link until the SDK is configured.
+* Android: a `GetProducts` call that fails now logs the error instead of silently returning no products.
+
+### Behaviour changes
+* `PaywallOptions.ShouldShowWebPurchaseConfirmationAlert` now defaults to `true`, as in SuperwallKit. Before, passing any `SuperwallOptions` turned the iOS web purchase confirmation alert off. Set it to `false` to keep it off.
+* A new `Entitlement` is now active (`IsActive` defaults to `true`), as `Entitlement(id:)` is natively. `SubscriptionStatus.CreateActive(new List<Entitlement> { new Entitlement { Id = "pro" } })` used to be sent as active with no entitlements, because the setter skips inactive ones.
+* `PaywallOptions.RestoreFailed` now sends only the texts you changed. Android shows its translation of each text left at its default; before, the English defaults always replaced them.
+
 ### Dependencies
 * Android: pins the native SDK to 2.10.2 (was `2.10.0`). [View Android SDK release notes](https://github.com/superwall/Superwall-Android/releases/tag/2.10.2).
 

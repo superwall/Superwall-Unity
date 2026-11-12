@@ -142,6 +142,7 @@ class SuperwallUnityBridge {
     companion object {
         private var unityDelegate: SuperwallUnityDelegateImpl? = null
         private var unityPurchaseController: UnityPurchaseController? = null
+        private var latestIntegrationAttributes: Map<AttributionProvider, String>? = null
         private val customCallbacks = UnityCustomCallbacks { method, data -> sendToUnity(method, data) }
         private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
@@ -243,10 +244,8 @@ class SuperwallUnityBridge {
 
     fun setUserAttributes(attributesJson: String) {
         try {
-            val json = JSONObject(attributesJson)
-            val map = mutableMapOf<String, Any>()
-            json.keys().forEach { key -> map[key] = json.get(key) }
-            Superwall.instance.setUserAttributes(map)
+            // A null value removes the attribute, as it does natively; JSONObject.NULL would be stored instead.
+            Superwall.instance.setUserAttributes(jsonToMap(JSONObject(attributesJson)))
         } catch (_: JSONException) {}
     }
 
@@ -254,21 +253,35 @@ class SuperwallUnityBridge {
 
     fun setIntegrationAttribute(attribute: String, value: String?) {
         val provider = parseAttributionProvider(attribute) ?: return
-        Superwall.instance.setIntegrationAttributes(mapOf(provider to (value ?: "")))
+        mergeIntegrationAttributes(mapOf(provider to value))
     }
 
     fun setIntegrationAttributes(attributesJson: String) {
         try {
             val json = JSONObject(attributesJson)
-            val map = mutableMapOf<AttributionProvider, String>()
+            val map = mutableMapOf<AttributionProvider, String?>()
             json.keys().forEach { key ->
                 val provider = parseAttributionProvider(key) ?: return@forEach
-                map[provider] = json.optString(key, "")
+                // optString would turn a JSON null into the string "null".
+                map[provider] = if (json.isNull(key)) null else json.optString(key)
             }
-            if (map.isNotEmpty()) {
-                Superwall.instance.setIntegrationAttributes(map)
-            }
+            mergeIntegrationAttributes(map)
         } catch (_: JSONException) {}
+    }
+
+    // The Android SDK replaces every integration attribute on each call, while iOS (and the C# API) set
+    // only the ones passed, and a null value removes one. Merge into the current set to match. The SDK
+    // stores a new set after a short delay, so the last set sent is kept here to merge into.
+    private fun mergeIntegrationAttributes(changes: Map<AttributionProvider, String?>) {
+        if (changes.isEmpty()) return
+        val merged = (latestIntegrationAttributes ?: Superwall.instance.integrationAttributes
+            .mapNotNull { (rawName, value) -> parseAttributionProvider(rawName)?.let { it to value } }
+            .toMap()).toMutableMap()
+        changes.forEach { (provider, value) ->
+            if (value == null) merged.remove(provider) else merged[provider] = value
+        }
+        latestIntegrationAttributes = merged
+        Superwall.instance.setIntegrationAttributes(merged)
     }
 
     private fun parseAttributionProvider(name: String): AttributionProvider? =
@@ -307,6 +320,7 @@ class SuperwallUnityBridge {
             put("active", serializeEntitlementSet(e.active))
             put("inactive", serializeEntitlementSet(e.inactive))
             put("all", serializeEntitlementSet(e.all))
+            put("web", serializeEntitlementSet(e.web))
         }.toString()
     }
 
@@ -385,7 +399,8 @@ class SuperwallUnityBridge {
     }
 
     fun handleDeepLink(url: String): Boolean {
-        return Superwall.instance.handleDeepLink(Uri.parse(url)).getOrDefault(false)
+        // The static call works before configure: the SDK keeps the link until it is configured.
+        return Superwall.handleDeepLink(Uri.parse(url)).getOrDefault(false)
     }
 
     fun togglePaywallSpinner(isHidden: Boolean) { Superwall.instance.togglePaywallSpinner(isHidden) }
@@ -397,10 +412,8 @@ class SuperwallUnityBridge {
     fun registerPlacement(placement: String, paramsJson: String?, handlerId: String?, featureId: String?, callbackId: String?) {
         val params = paramsJson?.let {
             try {
-                val json = JSONObject(it)
-                val map = mutableMapOf<String, Any>()
-                json.keys().forEach { key -> map[key] = json.get(key) }
-                map
+                @Suppress("UNCHECKED_CAST")
+                (jsonToMap(JSONObject(it)).filterValues { value -> value != null } as Map<String, Any>)
             } catch (_: JSONException) { null }
         }
 
@@ -469,17 +482,19 @@ class SuperwallUnityBridge {
     fun getPresentationResult(placement: String, paramsJson: String?, callbackId: String) {
         val params = paramsJson?.let {
             try {
-                val json = JSONObject(it)
-                val map = mutableMapOf<String, Any>()
-                json.keys().forEach { key -> map[key] = json.get(key) }
-                map
+                @Suppress("UNCHECKED_CAST")
+                (jsonToMap(JSONObject(it)).filterValues { value -> value != null } as Map<String, Any>)
             } catch (_: JSONException) { null }
         }
         scope.launch {
-            val result = Superwall.instance.getPresentationResult(placement, params).getOrNull()
-            if (result != null) {
-                sendAsyncResponse(callbackId, serializePresentationResult(result))
-            }
+            // Always reply, or the C# completion never runs. iOS reports a failure as paywallNotAvailable.
+            val data = Superwall.instance.getPresentationResult(placement, params).fold(
+                onSuccess = { serializePresentationResult(it) },
+                onFailure = { error ->
+                    JSONObject().put("type", "paywallNotAvailable").put("error", error.message ?: "Unknown error")
+                }
+            )
+            sendAsyncResponse(callbackId, data)
         }
     }
 
@@ -791,30 +806,30 @@ class SuperwallUnityBridge {
             }
         })
         put("surveys", JSONArray().apply {
-            info.surveys.forEach { s ->
-                put(JSONObject().apply {
-                    put("id", s.id)
-                    put("assignmentKey", s.assignmentKey)
-                    put("title", s.title)
-                    put("message", s.message)
-                    put("options", JSONArray().apply {
-                        s.options.forEach { o ->
-                            put(JSONObject().apply {
-                                put("id", o.id)
-                                put("text", o.title)
-                            })
-                        }
-                    })
-                    put("presentationCondition", when (s.presentationCondition) {
-                        com.superwall.sdk.config.models.SurveyShowCondition.ON_MANUAL_CLOSE -> "onManualClose"
-                        com.superwall.sdk.config.models.SurveyShowCondition.ON_PURCHASE -> "onPurchase"
-                    })
-                    put("presentationProbability", s.presentationProbability)
-                    put("includeOtherOption", s.includeOtherOption)
-                    put("includeCloseOption", s.includeCloseOption)
-                })
-            }
+            info.surveys.forEach { put(serializeSurvey(it)) }
         })
+    }
+
+    private fun serializeSurvey(s: com.superwall.sdk.config.models.Survey) = JSONObject().apply {
+        put("id", s.id)
+        put("assignmentKey", s.assignmentKey)
+        put("title", s.title)
+        put("message", s.message)
+        put("options", JSONArray().apply {
+            s.options.forEach { put(serializeSurveyOption(it)) }
+        })
+        put("presentationCondition", when (s.presentationCondition) {
+            com.superwall.sdk.config.models.SurveyShowCondition.ON_MANUAL_CLOSE -> "onManualClose"
+            com.superwall.sdk.config.models.SurveyShowCondition.ON_PURCHASE -> "onPurchase"
+        })
+        put("presentationProbability", s.presentationProbability)
+        put("includeOtherOption", s.includeOtherOption)
+        put("includeCloseOption", s.includeCloseOption)
+    }
+
+    private fun serializeSurveyOption(o: com.superwall.sdk.config.models.SurveyOption) = JSONObject().apply {
+        put("id", o.id)
+        put("text", o.title)
     }
 
     private fun serializeExperiment(exp: Experiment) = JSONObject().apply {
@@ -916,32 +931,86 @@ class SuperwallUnityBridge {
         t.revocationDate?.let { put("revocationDate", iso8601String(it)) }
     }
 
-    // Events carry the `StoreProductType` interface; the full serializer needs the concrete class.
-    private fun serializeStoreProductType(product: StoreProductType): JSONObject =
-        (product as? StoreProduct)?.let { serializeStoreProduct(it) }
-            ?: JSONObject().put("productIdentifier", product.productIdentifier)
-
     // The fields of a `SuperwallEvent` are what a consumer needs to act on a purchase (the product,
     // the store transaction, the paywall). `params` carries flattened analytics values only, so
     // without this the C# `SuperwallEventInfo.Product` / `.Transaction` / `.PaywallInfo` were always
     // null. Keys match the fields `BridgeCallbackHandler.DeserializeSuperwallEventInfo` reads.
     private fun appendEventPayload(event: SuperwallEvent, json: JSONObject) {
         when (event) {
+            is SuperwallEvent.DeviceAttributes -> json.put("deviceAttributes", jsonObjectOf(event.attributes))
+            is SuperwallEvent.IntegrationAttributes -> json.put("integrationAttributes", jsonObjectOf(event.audienceFilterParams))
+            is SuperwallEvent.DeepLink -> json.put("deepLinkUrl", event.uri.toString())
+            is SuperwallEvent.TriggerFire -> {
+                json.put("placementName", event.placementName)
+                json.put("result", serializeTriggerResult(event.result))
+            }
+            is SuperwallEvent.UserAttributes -> json.put("userAttributes", jsonObjectOf(event.attributes))
+            is SuperwallEvent.Restore.Fail -> json.put("message", event.reason)
+            is SuperwallEvent.PaywallResponseLoadStart -> putTriggeredPlacementName(json, event.triggeredPlacementName)
+            is SuperwallEvent.PaywallResponseLoadNotFound -> putTriggeredPlacementName(json, event.triggeredPlacementName)
+            is SuperwallEvent.PaywallResponseLoadFail -> putTriggeredPlacementName(json, event.triggeredPlacementName)
+            is SuperwallEvent.PaywallResponseLoadComplete -> {
+                putTriggeredPlacementName(json, event.triggeredPlacementName)
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.PaywallWebviewLoadStart -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            is SuperwallEvent.PaywallWebviewLoadFail -> {
+                event.errorMessage?.let { json.put("error", it.toString()) }
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.PaywallWebviewLoadComplete -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            is SuperwallEvent.PaywallWebviewLoadTimeout -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            is SuperwallEvent.PaywallWebviewLoadFallback -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            is SuperwallEvent.PaywallProductsLoadStart -> {
+                putTriggeredPlacementName(json, event.triggeredPlacementName)
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.PaywallProductsLoadFail -> {
+                event.errorMessage?.let { json.put("error", it) }
+                putTriggeredPlacementName(json, event.triggeredPlacementName)
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.PaywallProductsLoadComplete -> {
+                putTriggeredPlacementName(json, event.triggeredPlacementName)
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.PaywallResourceLoadFail -> json.put("error", event.error)
+            is SuperwallEvent.PaywallPresentationRequest -> json.put("status", when (event.status) {
+                is com.superwall.sdk.paywall.presentation.internal.PaywallPresentationRequestStatus.Presentation -> "presentation"
+                is com.superwall.sdk.paywall.presentation.internal.PaywallPresentationRequestStatus.NoPresentation -> "noPresentation"
+                is com.superwall.sdk.paywall.presentation.internal.PaywallPresentationRequestStatus.Timeout -> "timeout"
+            })
+            is SuperwallEvent.SurveyResponse -> {
+                json.put("survey", serializeSurvey(event.survey))
+                json.put("selectedOption", serializeSurveyOption(event.selectedOption))
+                event.customResponse?.let { json.put("customResponse", it) }
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.CustomPlacement -> {
+                json.put("name", event.placementName)
+                json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
+            }
+            is SuperwallEvent.EnrichmentComplete -> {
+                json.put("userEnrichment", jsonObjectOf(event.userEnrichment))
+                json.put("deviceEnrichment", jsonObjectOf(event.deviceEnrichment))
+            }
+            is SuperwallEvent.ReviewRequested -> json.put("reviewRequestedCount", event.count)
+            is SuperwallEvent.PaywallPageView -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             is SuperwallEvent.PaywallOpen -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             is SuperwallEvent.PaywallClose -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             is SuperwallEvent.PaywallDecline -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             is SuperwallEvent.TransactionTimeout -> json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             is SuperwallEvent.TransactionStart -> {
-                json.put("product", serializeStoreProductType(event.product))
+                json.put("product", serializeStoreProduct(event.product))
                 json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             }
             is SuperwallEvent.TransactionAbandon -> {
-                json.put("product", serializeStoreProductType(event.product))
+                json.put("product", serializeStoreProduct(event.product))
                 json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             }
             is SuperwallEvent.TransactionComplete -> {
                 event.transaction?.let { json.put("transaction", serializeStoreTransaction(it)) }
-                json.put("product", serializeStoreProductType(event.product))
+                json.put("product", serializeStoreProduct(event.product))
                 json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             }
             is SuperwallEvent.SubscriptionStart -> {
@@ -975,12 +1044,68 @@ class SuperwallUnityBridge {
         }
     }
 
-    private fun serializeCustomerInfo(info: CustomerInfo) = JSONObject().apply {
-        put("userId", info.userId)
-        put("entitlements", JSONArray().apply { info.entitlements.forEach { put(serializeEntitlement(it)) } })
+    private fun putTriggeredPlacementName(json: JSONObject, name: String?) {
+        name?.let { json.put("triggeredPlacementName", it) }
     }
 
-    private fun serializeStoreProduct(product: StoreProduct) = JSONObject().apply {
+    private fun serializeTriggerResult(result: com.superwall.sdk.models.triggers.TriggerResult) = JSONObject().apply {
+        when (result) {
+            is com.superwall.sdk.models.triggers.TriggerResult.PlacementNotFound -> put("type", "placementNotFound")
+            is com.superwall.sdk.models.triggers.TriggerResult.NoAudienceMatch -> put("type", "noAudienceMatch")
+            is com.superwall.sdk.models.triggers.TriggerResult.Paywall -> {
+                put("type", "paywall")
+                put("experiment", serializeExperiment(result.experiment))
+            }
+            is com.superwall.sdk.models.triggers.TriggerResult.Holdout -> {
+                put("type", "holdout")
+                put("experiment", serializeExperiment(result.experiment))
+            }
+            is com.superwall.sdk.models.triggers.TriggerResult.Error -> {
+                put("type", "error")
+                put("error", result.error.message ?: result.error.toString())
+            }
+        }
+    }
+
+    // Dates are epoch milliseconds, as for entitlements. Optional values are omitted rather than sent as null.
+    internal fun serializeCustomerInfo(info: CustomerInfo) = JSONObject().apply {
+        put("userId", info.userId)
+        put("entitlements", JSONArray().apply { info.entitlements.forEach { put(serializeEntitlement(it)) } })
+        put("subscriptions", JSONArray().apply {
+            info.subscriptions.forEach { t ->
+                put(JSONObject().apply {
+                    put("transactionId", t.transactionId)
+                    put("productId", t.productId)
+                    put("purchaseDate", t.purchaseDate.time)
+                    put("willRenew", t.willRenew)
+                    put("isRevoked", t.isRevoked)
+                    put("isInGracePeriod", t.isInGracePeriod)
+                    put("isInBillingRetryPeriod", t.isInBillingRetryPeriod)
+                    put("isActive", t.isActive)
+                    t.expirationDate?.let { put("expirationDate", it.time) }
+                    serializeOfferType(t.offerType)?.let { put("offerType", it) }
+                    t.subscriptionGroupId?.let { put("subscriptionGroupId", it) }
+                    put("store", serializeStore(t.store))
+                })
+            }
+        })
+        put("nonSubscriptions", JSONArray().apply {
+            info.nonSubscriptions.forEach { t ->
+                put(JSONObject().apply {
+                    put("transactionId", t.transactionId)
+                    put("productId", t.productId)
+                    put("purchaseDate", t.purchaseDate.time)
+                    put("isConsumable", t.isConsumable)
+                    put("isRevoked", t.isRevoked)
+                    put("store", serializeStore(t.store))
+                })
+            }
+        })
+    }
+
+    // Every field of the C# `StoreProduct` model that the Android SDK has. `subscriptionGroupIdentifier`,
+    // `isFamilyShareable` and `entitlements` are App Store only and stay at their C# defaults.
+    internal fun serializeStoreProduct(product: StoreProductType) = JSONObject().apply {
         put("productIdentifier", product.productIdentifier)
         put("fullIdentifier", product.fullIdentifier)
         put("localizedPrice", product.localizedPrice)
@@ -988,18 +1113,28 @@ class SuperwallUnityBridge {
         put("period", product.period)
         put("periodly", product.periodly)
         put("periodDays", product.periodDays)
+        put("periodDaysString", product.periodDaysString)
         put("periodWeeks", product.periodWeeks)
+        put("periodWeeksString", product.periodWeeksString)
         put("periodMonths", product.periodMonths)
+        put("periodMonthsString", product.periodMonthsString)
         put("periodYears", product.periodYears)
+        put("periodYearsString", product.periodYearsString)
         put("dailyPrice", product.dailyPrice)
         put("weeklyPrice", product.weeklyPrice)
         put("monthlyPrice", product.monthlyPrice)
         put("yearlyPrice", product.yearlyPrice)
         put("hasFreeTrial", product.hasFreeTrial)
+        product.trialPeriodEndDate?.let { put("trialPeriodEndDate", iso8601String(it)) }
+        put("trialPeriodEndDateString", product.trialPeriodEndDateString)
         put("trialPeriodDays", product.trialPeriodDays)
+        put("trialPeriodDaysString", product.trialPeriodDaysString)
         put("trialPeriodWeeks", product.trialPeriodWeeks)
+        put("trialPeriodWeeksString", product.trialPeriodWeeksString)
         put("trialPeriodMonths", product.trialPeriodMonths)
+        put("trialPeriodMonthsString", product.trialPeriodMonthsString)
         put("trialPeriodYears", product.trialPeriodYears)
+        put("trialPeriodYearsString", product.trialPeriodYearsString)
         put("trialPeriodText", product.trialPeriodText)
         put("trialPeriodPrice", product.trialPeriodPrice.toString())
         put("localizedTrialPeriodPrice", product.localizedTrialPeriodPrice)
@@ -1007,8 +1142,10 @@ class SuperwallUnityBridge {
         put("currencySymbol", product.currencySymbol)
         put("locale", product.locale)
         put("languageCode", product.languageCode)
+        product.regionCode?.let { put("regionCode", it) }
         put("price", product.price.toString())
         put("productType", product.productType)
+        put("attributes", JSONObject(product.attributes))
     }
 
     private fun serializeRedemptionResult(result: RedemptionResult): JSONObject = JSONObject().apply {
@@ -1016,9 +1153,7 @@ class SuperwallUnityBridge {
             is RedemptionResult.Success -> {
                 put("type", "success")
                 put("code", result.code)
-                put("redemptionInfo", JSONObject().apply {
-                    put("entitlements", serializeEntitlementSet(result.redemptionInfo.entitlements.toSet()))
-                })
+                put("redemptionInfo", serializeRedemptionInfo(result.redemptionInfo))
             }
             is RedemptionResult.Error -> {
                 put("type", "error")
@@ -1038,11 +1173,52 @@ class SuperwallUnityBridge {
             is RedemptionResult.ExpiredSubscription -> {
                 put("type", "expiredSubscription")
                 put("code", result.code)
-                put("redemptionInfo", JSONObject().apply {
-                    put("entitlements", serializeEntitlementSet(result.redemptionInfo.entitlements.toSet()))
-                })
+                put("redemptionInfo", serializeRedemptionInfo(result.redemptionInfo))
             }
         }
+    }
+
+    // Same shape as the iOS bridge: `type` tells the ownership and store identifier cases apart.
+    internal fun serializeRedemptionInfo(info: com.superwall.sdk.models.internal.RedemptionInfo) = JSONObject().apply {
+        put("ownership", when (val ownership = info.ownership) {
+            is com.superwall.sdk.models.internal.RedemptionOwnership.AppUser ->
+                JSONObject().put("type", "appUser").put("appUserId", ownership.appUserId)
+            is com.superwall.sdk.models.internal.RedemptionOwnership.Device ->
+                JSONObject().put("type", "device").put("deviceId", ownership.deviceId)
+        })
+        put("purchaserInfo", JSONObject().apply {
+            put("appUserId", info.purchaserInfo.appUserId)
+            info.purchaserInfo.email?.let { put("email", it) }
+            put("storeIdentifiers", when (val ids = info.purchaserInfo.storeIdentifiers) {
+                is com.superwall.sdk.models.internal.StoreIdentifiers.Stripe -> JSONObject().apply {
+                    put("type", "stripe")
+                    put("customerId", ids.stripeCustomerId)
+                    put("subscriptionIds", JSONArray(ids.subscriptionIds))
+                }
+                is com.superwall.sdk.models.internal.StoreIdentifiers.Paddle -> JSONObject().apply {
+                    put("type", "paddle")
+                    put("customerId", ids.paddleCustomerId)
+                    put("subscriptionIds", JSONArray(ids.paddleSubscriptionIds))
+                }
+                is com.superwall.sdk.models.internal.StoreIdentifiers.Unknown -> JSONObject().apply {
+                    val properties = jsonObjectOf(ids.properties)
+                    put("type", "unknown")
+                    properties.optString("store", "").takeIf { it.isNotEmpty() }?.let { put("store", it) }
+                    properties.remove("store")
+                    put("additionalInfo", properties)
+                }
+            })
+        })
+        info.paywallInfo?.let { paywall ->
+            put("paywallInfo", JSONObject().apply {
+                put("identifier", paywall.identifier)
+                put("placementName", paywall.placementName)
+                put("placementParams", jsonObjectOf(paywall.placementParams))
+                put("variantId", paywall.variantId)
+                put("experimentId", paywall.experimentId)
+            })
+        }
+        put("entitlements", serializeEntitlementSet(info.entitlements.toSet()))
     }
 
     private fun serializePresentationResult(result: PresentationResult) = JSONObject().apply {
@@ -1083,21 +1259,7 @@ class SuperwallUnityBridge {
                     val scopesArray = loggingJson.getJSONArray("scopes")
                     val scopeSet = java.util.EnumSet.noneOf(LogScope::class.java)
                     for (i in 0 until scopesArray.length()) {
-                        val scope = when (scopesArray.getString(i).lowercase()) {
-                            "all" -> LogScope.all
-                            "paywallevents" -> LogScope.paywallEvents
-                            "paywallpresentation" -> LogScope.paywallPresentation
-                            "network" -> LogScope.network
-                            "productsmanager" -> LogScope.productsManager
-                            "superwallcore" -> LogScope.superwallCore
-                            "configmanager" -> LogScope.configManager
-                            "identitymanager" -> LogScope.identityManager
-                            "localizationmanager" -> LogScope.localizationManager
-                            "storekitmanager", "billing" -> LogScope.billing
-                            "bouncebutton" -> LogScope.bounceButton
-                            "device" -> LogScope.device
-                            else -> null
-                        }
+                        val scope = parseLogScope(scopesArray.getString(i))
                         if (scope != null) scopeSet.add(scope)
                     }
                     if (scopeSet.isNotEmpty()) this.logging.scopes = scopeSet
@@ -1132,6 +1294,11 @@ class SuperwallUnityBridge {
                         else -> com.superwall.sdk.config.options.PaywallOptions.PresentationHost.IN_WINDOW
                     }
                 }
+                paywallsJson.optJSONObject("overrideProductsByName")?.let { overrides ->
+                    paywalls.overrideProductsByName = overrides.keys().asSequence()
+                        .filter { !overrides.isNull(it) }
+                        .associateWith { overrides.getString(it) }
+                }
                 if (paywallsJson.has("restoreFailed")) {
                     val restoreJson = paywallsJson.getJSONObject("restoreFailed")
                     if (restoreJson.has("title")) paywalls.restoreFailed.title = restoreJson.getString("title")
@@ -1141,6 +1308,34 @@ class SuperwallUnityBridge {
             }
         }
     } catch (_: JSONException) { null }
+
+    // Every `LogScope` C# has an Android counterpart for. The view controller scopes have Android names
+    // of their own, and `StoreKitManager` turns on `billing`, which replaced Android's `storeKitManager`.
+    internal fun parseLogScope(name: String): LogScope? = when (name.lowercase()) {
+        "all" -> LogScope.all
+        "localizationmanager" -> LogScope.localizationManager
+        "bouncebutton" -> LogScope.bounceButton
+        "coredata" -> LogScope.coreData
+        "configmanager" -> LogScope.configManager
+        "identitymanager" -> LogScope.identityManager
+        "debugmanager" -> LogScope.debugManager
+        "debugviewcontroller" -> LogScope.debugView
+        "localizationviewcontroller" -> LogScope.localizationView
+        "gamecontrollermanager" -> LogScope.gameControllerManager
+        "device" -> LogScope.device
+        "network" -> LogScope.network
+        "paywallevents" -> LogScope.paywallEvents
+        "productsmanager" -> LogScope.productsManager
+        "storekitmanager", "billing" -> LogScope.billing
+        "placements" -> LogScope.placements
+        "receipts" -> LogScope.receipts
+        "superwallcore" -> LogScope.superwallCore
+        "paywallpresentation" -> LogScope.paywallPresentation
+        "transactions" -> LogScope.transactions
+        "paywallviewcontroller" -> LogScope.paywallView
+        "cache" -> LogScope.cache
+        else -> null
+    }
 
     // --- Delegate ---
 
@@ -1192,6 +1387,7 @@ class SuperwallUnityBridge {
             sendToUnity("handleLog", JSONObject().apply {
                 put("level", level); put("scope", scope)
                 put("message", message); put("error", error?.message)
+                info?.let { put("info", jsonObjectOf(it)) }
             })
         }
 
@@ -1372,4 +1568,62 @@ private fun JSONObject.putReplacement(replacement: ProductReplacement?) {
         put("oldProductId", replacement.oldProductId ?: JSONObject.NULL)
         put("oldPurchaseToken", replacement.oldPurchaseToken ?: JSONObject.NULL)
     })
+}
+
+/**
+ * A JSON object from C# as the maps and lists the SDK expects. Nested objects and arrays used to be passed on as
+ * `JSONObject`/`JSONArray`, which the SDK does not read as maps or lists. A null value stays null, which removes a
+ * user attribute; nested nulls are dropped.
+ */
+internal fun jsonToMap(json: JSONObject): Map<String, Any?> {
+    val map = mutableMapOf<String, Any?>()
+    json.keys().forEach { key -> map[key] = fromJsonValue(json.get(key)) }
+    return map
+}
+
+private fun fromJsonValue(value: Any?): Any? = when (value) {
+    is JSONObject -> {
+        val map = mutableMapOf<String, Any>()
+        value.keys().forEach { key -> fromJsonValue(value.get(key))?.let { map[key] = it } }
+        map
+    }
+    is JSONArray -> (0 until value.length()).mapNotNull { fromJsonValue(value.get(it)) }
+    JSONObject.NULL -> null
+    else -> value
+}
+
+/**
+ * A map from the SDK as JSON for C#. `JSONObject(map)` keeps values it can't represent (dates, the SDK's own JSON
+ * elements, NaN) in a form that either throws later or reaches C# as an unreadable string, so every value is
+ * converted here.
+ */
+internal fun jsonObjectOf(map: Map<String, *>): JSONObject {
+    val json = JSONObject()
+    map.forEach { (key, value) -> json.put(key, toJsonValue(value)) }
+    return json
+}
+
+private fun toJsonValue(value: Any?): Any = when (value) {
+    null -> JSONObject.NULL
+    is String, is Boolean, is Int, is Long -> value
+    is Double -> if (value.isNaN() || value.isInfinite()) value.toString() else value
+    is Float -> if (value.isNaN() || value.isInfinite()) value.toString() else value.toDouble()
+    is Number -> value
+    is Map<*, *> -> JSONObject().apply {
+        value.forEach { (key, element) -> if (key != null) put(key.toString(), toJsonValue(element)) }
+    }
+    is Iterable<*> -> JSONArray().apply { value.forEach { put(toJsonValue(it)) } }
+    is Array<*> -> JSONArray().apply { value.forEach { put(toJsonValue(it)) } }
+    is JSONObject, is JSONArray -> value
+    is Date -> value.time
+    // kotlinx.serialization's JsonElement isn't on this module's compile classpath; its toString() is JSON.
+    else -> if (value.javaClass.name.startsWith("kotlinx.serialization.json.")) {
+        try {
+            org.json.JSONTokener(value.toString()).nextValue() ?: JSONObject.NULL
+        } catch (_: JSONException) {
+            value.toString()
+        }
+    } else {
+        value.toString()
+    }
 }

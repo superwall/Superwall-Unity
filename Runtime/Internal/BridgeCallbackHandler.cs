@@ -355,7 +355,8 @@ namespace Superwall.Internal
             return entitlement;
         }
 
-        private static PaywallInfo DeserializePaywallInfo(Dictionary<string, object> data)
+        // Also used by Superwall.LatestPaywallInfo, which had a slimmer parser of its own.
+        internal static PaywallInfo DeserializePaywallInfo(Dictionary<string, object> data)
         {
             if (data == null) return null;
 
@@ -547,7 +548,8 @@ namespace Superwall.Internal
             return experiment;
         }
 
-        private static CustomerInfo DeserializeCustomerInfo(Dictionary<string, object> data)
+        // Also used by Superwall.GetCustomerInfo. Dates are epoch milliseconds.
+        internal static CustomerInfo DeserializeCustomerInfo(Dictionary<string, object> data)
         {
             if (data == null) return null;
 
@@ -562,6 +564,50 @@ namespace Superwall.Internal
                 {
                     if (item is Dictionary<string, object> entDict)
                         info.Entitlements.Add(DeserializeEntitlement(entDict));
+                }
+            }
+
+            var subscriptionsList = GetList(data, "subscriptions");
+            if (subscriptionsList != null)
+            {
+                info.Subscriptions = new List<SubscriptionTransaction>();
+                foreach (var item in subscriptionsList)
+                {
+                    if (!(item is Dictionary<string, object> t)) continue;
+                    info.Subscriptions.Add(new SubscriptionTransaction
+                    {
+                        TransactionId = GetString(t, "transactionId"),
+                        ProductId = GetString(t, "productId"),
+                        PurchaseDate = GetLong(t, "purchaseDate"),
+                        WillRenew = GetBool(t, "willRenew"),
+                        IsRevoked = GetBool(t, "isRevoked"),
+                        IsInGracePeriod = GetBool(t, "isInGracePeriod"),
+                        IsInBillingRetryPeriod = GetBool(t, "isInBillingRetryPeriod"),
+                        IsActive = GetBool(t, "isActive"),
+                        ExpirationDate = t.ContainsKey("expirationDate") && t["expirationDate"] != null ? (long?)GetLong(t, "expirationDate") : null,
+                        OfferType = ParseEnum<LatestSubscriptionOfferType>(GetString(t, "offerType")),
+                        SubscriptionGroupId = GetString(t, "subscriptionGroupId"),
+                        Store = ParseEnum<ProductStore>(GetString(t, "store")),
+                    });
+                }
+            }
+
+            var nonSubscriptionsList = GetList(data, "nonSubscriptions");
+            if (nonSubscriptionsList != null)
+            {
+                info.NonSubscriptions = new List<NonSubscriptionTransaction>();
+                foreach (var item in nonSubscriptionsList)
+                {
+                    if (!(item is Dictionary<string, object> t)) continue;
+                    info.NonSubscriptions.Add(new NonSubscriptionTransaction
+                    {
+                        TransactionId = GetString(t, "transactionId"),
+                        ProductId = GetString(t, "productId"),
+                        PurchaseDate = GetLong(t, "purchaseDate"),
+                        IsConsumable = GetBool(t, "isConsumable"),
+                        IsRevoked = GetBool(t, "isRevoked"),
+                        Store = ParseEnum<ProductStore>(GetString(t, "store")),
+                    });
                 }
             }
 
@@ -587,8 +633,8 @@ namespace Superwall.Internal
             var paramsDict = GetDict(data, "params");
             info.Params = paramsDict;
 
-            // Populated by the native bridges only for the events that carry them (paywall open/close/
-            // decline, the transaction family). Absent keys leave the fields null.
+            // Populated by the native bridges only for the events that carry them. Absent keys leave the
+            // fields null.
             info.PaywallInfo = DeserializePaywallInfo(GetDict(data, "paywallInfo"));
 
             var productDict = GetDict(data, "product");
@@ -602,7 +648,47 @@ namespace Superwall.Internal
             info.Error = GetString(data, "error");
             info.RestoreType = GetString(data, "restoreType");
 
+            info.PlacementName = GetString(data, "placementName");
+            info.DeviceAttributes = GetDict(data, "deviceAttributes");
+            info.DeepLinkUrl = GetString(data, "deepLinkUrl");
+            info.Result = DeserializeTriggerResult(GetDict(data, "result"));
+            info.TriggeredPlacementName = GetString(data, "triggeredPlacementName");
+            info.Attempt = GetIntNullable(data, "attempt");
+            info.Name = GetString(data, "name");
+            var surveyDict = GetDict(data, "survey");
+            if (surveyDict != null)
+                info.Survey = DeserializeSurvey(surveyDict);
+            var optionDict = GetDict(data, "selectedOption");
+            if (optionDict != null)
+                info.SelectedOption = new SurveyOption { Id = GetString(optionDict, "id"), Text = GetString(optionDict, "text") };
+            info.CustomResponse = GetString(data, "customResponse");
+            info.Status = ParseEnum<PaywallPresentationRequestStatusType>(GetString(data, "status"));
+            info.UserAttributes = GetDict(data, "userAttributes");
+            info.Token = GetString(data, "token");
+            info.UserEnrichment = GetDict(data, "userEnrichment");
+            info.DeviceEnrichment = GetDict(data, "deviceEnrichment");
+            info.Message = GetString(data, "message");
+            info.IntegrationAttributes = GetDict(data, "integrationAttributes");
+            info.ReviewRequestedCount = GetIntNullable(data, "reviewRequestedCount");
+            var missingList = GetList(data, "missingProductIdentifiers");
+            if (missingList != null)
+                info.MissingProductIdentifiers = missingList.Select(p => p?.ToString()).Where(p => p != null).ToList();
+
             return info;
+        }
+
+        private static TriggerResult DeserializeTriggerResult(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            switch (GetString(data, "type"))
+            {
+                case "placementNotFound": return TriggerResult.PlacementNotFound();
+                case "noAudienceMatch": return TriggerResult.NoAudienceMatch();
+                case "paywall": return TriggerResult.Paywall(DeserializeExperiment(GetDict(data, "experiment")));
+                case "holdout": return TriggerResult.Holdout(DeserializeExperiment(GetDict(data, "experiment")));
+                case "error": return TriggerResult.Error(GetString(data, "error"));
+                default: return null;
+            }
         }
 
         private static StoreTransaction DeserializeStoreTransaction(Dictionary<string, object> data)
@@ -671,6 +757,41 @@ namespace Superwall.Internal
 
             var info = new RedemptionInfo();
 
+            var ownershipDict = GetDict(data, "ownership");
+            switch (GetString(ownershipDict, "type"))
+            {
+                case "appUser":
+                    info.Ownership = Ownership.AppUser(GetString(ownershipDict, "appUserId"));
+                    break;
+                case "device":
+                    info.Ownership = Ownership.Device(GetString(ownershipDict, "deviceId"));
+                    break;
+            }
+
+            var purchaserDict = GetDict(data, "purchaserInfo");
+            if (purchaserDict != null)
+            {
+                info.PurchaserInfo = new PurchaserInfo
+                {
+                    AppUserId = GetString(purchaserDict, "appUserId"),
+                    Email = GetString(purchaserDict, "email"),
+                    StoreIdentifiers = DeserializeStoreIdentifiers(GetDict(purchaserDict, "storeIdentifiers")),
+                };
+            }
+
+            var paywallDict = GetDict(data, "paywallInfo");
+            if (paywallDict != null)
+            {
+                info.PaywallInfo = new RedemptionPaywallInfo
+                {
+                    Identifier = GetString(paywallDict, "identifier"),
+                    PlacementName = GetString(paywallDict, "placementName"),
+                    PlacementParams = GetDict(paywallDict, "placementParams"),
+                    VariantId = GetString(paywallDict, "variantId"),
+                    ExperimentId = GetString(paywallDict, "experimentId"),
+                };
+            }
+
             var entitlementsList = GetList(data, "entitlements");
             if (entitlementsList != null)
             {
@@ -683,6 +804,19 @@ namespace Superwall.Internal
             }
 
             return info;
+        }
+
+        private static StoreIdentifiers DeserializeStoreIdentifiers(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var subscriptionIds = GetList(data, "subscriptionIds")?.Select(p => p?.ToString()).Where(p => p != null).ToList();
+            switch (GetString(data, "type"))
+            {
+                case "stripe": return StoreIdentifiers.Stripe(GetString(data, "customerId"), subscriptionIds);
+                case "paddle": return StoreIdentifiers.Paddle(GetString(data, "customerId"), subscriptionIds);
+                case "unknown": return StoreIdentifiers.Unknown(GetString(data, "store"), GetDict(data, "additionalInfo"));
+                default: return null;
+            }
         }
 
         private static PaywallResult DeserializePaywallResult(Dictionary<string, object> data)

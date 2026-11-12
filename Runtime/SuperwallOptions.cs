@@ -31,7 +31,10 @@ namespace Superwall
         public bool ShouldShowWebRestorationAlert = true;
         public TransactionBackgroundView TransactionBackgroundView = TransactionBackgroundView.Spinner;
         public Dictionary<string, string> OverrideProductsByName;
-        public bool ShouldShowWebPurchaseConfirmationAlert = false;
+        /// <summary>
+        /// iOS only. Whether to show an alert confirming a purchase made on the web. Defaults to true, as in SuperwallKit.
+        /// </summary>
+        public bool ShouldShowWebPurchaseConfirmationAlert = true;
         public bool UseCachedTemplates = false;
         public float? TimeoutAfter = null;
         /// <summary>

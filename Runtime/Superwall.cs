@@ -122,19 +122,31 @@ namespace Superwall
 
         // ------- Integration Attributes -------
 
+        /// <summary>Sets one integration attribute. A null value removes it.</summary>
         public void SetIntegrationAttribute(IntegrationAttribute attribute, string value = null)
         {
-            CallNative_SetIntegrationAttribute(attribute.ToString(), value);
+            CallNative_SetIntegrationAttribute(IntegrationAttributeKey(attribute), value);
         }
 
+        /// <summary>Sets the integration attributes passed, leaving the others as they are. A null value removes one.</summary>
         public void SetIntegrationAttributes(Dictionary<IntegrationAttribute, string> attributes)
         {
             var serializable = new Dictionary<string, object>();
             foreach (var kvp in attributes)
             {
-                serializable[kvp.Key.ToString()] = kvp.Value;
+                serializable[IntegrationAttributeKey(kvp.Key)] = kvp.Value;
             }
             CallNative_SetIntegrationAttributes(Json.Serialize(serializable));
+        }
+
+        /// <summary>
+        /// The native SDKs name integration attributes in camelCase (<c>adjustId</c>) and both bridges match
+        /// those names exactly. The C# member name (<c>AdjustId</c>) matched neither, so every call was dropped.
+        /// </summary>
+        internal static string IntegrationAttributeKey(IntegrationAttribute attribute)
+        {
+            var name = attribute.ToString();
+            return char.ToLowerInvariant(name[0]) + name.Substring(1);
         }
 
         // ------- Device Attributes -------
@@ -205,17 +217,8 @@ namespace Superwall
             string callbackId = Guid.NewGuid().ToString();
             BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
             {
-                var info = new CustomerInfo();
-                if (!string.IsNullOrEmpty(json))
-                {
-                    var dict = Json.Deserialize(json) as Dictionary<string, object>;
-                    if (dict != null)
-                    {
-                        info.UserId = dict.ContainsKey("userId") ? dict["userId"] as string : null;
-                        info.Entitlements = DeserializeEntitlementList(dict.ContainsKey("entitlements") ? dict["entitlements"] as List<object> : null);
-                    }
-                }
-                completion(info);
+                var dict = string.IsNullOrEmpty(json) ? null : Json.Deserialize(json) as Dictionary<string, object>;
+                completion(BridgeCallbackHandler.DeserializeCustomerInfo(dict) ?? new CustomerInfo());
             });
             CallNative_GetCustomerInfo(callbackId);
         }
@@ -307,7 +310,7 @@ namespace Superwall
                 if (string.IsNullOrEmpty(json)) return null;
                 var dict = Json.Deserialize(json) as Dictionary<string, object>;
                 if (dict == null) return null;
-                return DeserializePaywallInfo(dict);
+                return BridgeCallbackHandler.DeserializePaywallInfo(dict);
             }
         }
 
@@ -528,6 +531,11 @@ namespace Superwall
                 if (!string.IsNullOrEmpty(json))
                 {
                     var dict = Json.Deserialize(json) as Dictionary<string, object>;
+                    // Android replies with an error instead of products when the store can't be reached.
+                    if (dict != null && dict.ContainsKey("error"))
+                    {
+                        Debug.LogWarning($"[Superwall] GetProducts failed: {dict["error"]}");
+                    }
                     if (dict != null && dict.ContainsKey("products"))
                     {
                         var products = dict["products"] as Dictionary<string, object>;
@@ -798,25 +806,6 @@ namespace Superwall
             return p;
         }
 
-        private static PaywallInfo DeserializePaywallInfo(Dictionary<string, object> dict)
-        {
-            if (dict == null) return null;
-            var info = new PaywallInfo();
-            info.Identifier = dict.ContainsKey("identifier") ? dict["identifier"] as string : null;
-            info.Name = dict.ContainsKey("name") ? dict["name"] as string : null;
-            info.Url = dict.ContainsKey("url") ? dict["url"] as string : null;
-            if (dict.ContainsKey("productIds") && dict["productIds"] is List<object> pids)
-            {
-                info.ProductIds = new List<string>();
-                foreach (var pid in pids) info.ProductIds.Add(pid?.ToString());
-            }
-            if (dict.ContainsKey("experiment") && dict["experiment"] is Dictionary<string, object> expDict)
-            {
-                info.Experiment = DeserializeExperiment(expDict);
-            }
-            return info;
-        }
-
         // ============= Options Serialization =============
 
         private static string SerializeOptions(SuperwallOptions options)
@@ -836,12 +825,17 @@ namespace Superwall
 
                 if (options.Paywalls.RestoreFailed != null)
                 {
-                    paywalls["restoreFailed"] = new Dictionary<string, object>
-                    {
-                        { "title", options.Paywalls.RestoreFailed.Title },
-                        { "message", options.Paywalls.RestoreFailed.Message },
-                        { "closeButtonTitle", options.Paywalls.RestoreFailed.CloseButtonTitle }
-                    };
+                    // Only the texts the app changed. Android shows its own translation of each one left unset,
+                    // and the C# defaults are the English texts, so sending them replaced the translations.
+                    var defaults = new RestoreFailed();
+                    var restoreFailed = new Dictionary<string, object>();
+                    if (options.Paywalls.RestoreFailed.Title != defaults.Title)
+                        restoreFailed["title"] = options.Paywalls.RestoreFailed.Title;
+                    if (options.Paywalls.RestoreFailed.Message != defaults.Message)
+                        restoreFailed["message"] = options.Paywalls.RestoreFailed.Message;
+                    if (options.Paywalls.RestoreFailed.CloseButtonTitle != defaults.CloseButtonTitle)
+                        restoreFailed["closeButtonTitle"] = options.Paywalls.RestoreFailed.CloseButtonTitle;
+                    paywalls["restoreFailed"] = restoreFailed;
                 }
 
                 if (options.Paywalls.OverrideProductsByName != null)

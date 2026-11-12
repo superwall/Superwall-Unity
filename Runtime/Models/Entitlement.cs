@@ -8,7 +8,11 @@ namespace Superwall
     {
         public string Id;
         public EntitlementType Type;
-        public bool IsActive;
+        /// <summary>
+        /// Whether the entitlement is active. A new <c>Entitlement</c> is active, as in the native SDKs, so one built
+        /// for <c>SubscriptionStatus.CreateActive</c> is sent without setting this.
+        /// </summary>
+        public bool IsActive = true;
         public List<string> ProductIds;
         public string LatestProductId;
         public ProductStore? Store;

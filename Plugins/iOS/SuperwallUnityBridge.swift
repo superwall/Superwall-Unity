@@ -165,6 +165,22 @@ private func epochMilliseconds(_ date: Date) -> Int64 {
     return Int64((date.timeIntervalSince1970 * 1000).rounded())
 }
 
+// `ProductStore` and `EntitlementType` are `@objc` Int enums, which `String(describing:)` prints as
+// the type name, not the case, so C# could never parse `Entitlement.Store`. Name the cases here, in
+// the vocabulary the Android bridge uses. `custom` has no C# member yet and is sent as `other`, as
+// on Android.
+private func serializeProductStore(_ store: ProductStore) -> String {
+    switch store {
+    case .appStore: return "appStore"
+    case .stripe: return "stripe"
+    case .paddle: return "paddle"
+    case .playStore: return "playStore"
+    case .superwall: return "superwall"
+    case .other, .custom: return "other"
+    @unknown default: return "other"
+    }
+}
+
 // Mirrors every field of the C# `Entitlement` model (see Runtime/Models/Entitlement.cs), which
 // `BridgeCallbackHandler.DeserializeEntitlement` already reads. Enum values are emitted as their
 // case names, which the C# side parses case-insensitively (`playStore` -> `ProductStore.PlayStore`,
@@ -174,7 +190,7 @@ private func epochMilliseconds(_ date: Date) -> Int64 {
 private func serializeEntitlement(_ entitlement: Entitlement) -> [String: Any] {
     var dict: [String: Any] = [
         "id": entitlement.id,
-        "type": String(describing: entitlement.type),
+        "type": "serviceLevel",
         "isActive": entitlement.isActive,
         "productIds": Array(entitlement.productIds)
     ]
@@ -182,7 +198,7 @@ private func serializeEntitlement(_ entitlement: Entitlement) -> [String: Any] {
         dict["latestProductId"] = latestProductId
     }
     if let store = entitlement.store {
-        dict["store"] = String(describing: store)
+        dict["store"] = serializeProductStore(store)
     }
     if let startsAt = entitlement.startsAt {
         dict["startsAt"] = epochMilliseconds(startsAt)
@@ -307,14 +323,19 @@ private func serializeSurvey(_ s: Survey) -> [String: Any] {
     }
     return [
         "id": s.id,
+        "assignmentKey": s.assignmentKey,
         "title": s.title,
         "message": s.message,
-        "options": s.options.map { ["id": $0.id, "text": $0.title] },
+        "options": s.options.map { serializeSurveyOption($0) },
         "presentationCondition": conditionStr,
         "presentationProbability": s.presentationProbability,
         "includeOtherOption": s.includeOtherOption,
         "includeCloseOption": s.includeCloseOption
     ]
+}
+
+private func serializeSurveyOption(_ option: SurveyOption) -> [String: Any] {
+    return ["id": option.id, "text": option.title]
 }
 
 private func serializeSubscriptionStatus(_ status: SubscriptionStatus) -> [String: Any] {
@@ -384,8 +405,97 @@ private func appendEventPayload(_ event: SuperwallEvent, to dict: inout [String:
     case .paywallOpen(let paywallInfo),
          .paywallClose(let paywallInfo),
          .paywallDecline(let paywallInfo),
-         .transactionTimeout(let paywallInfo):
+         .transactionTimeout(let paywallInfo),
+         .paywallWebviewLoadStart(let paywallInfo),
+         .paywallWebviewLoadFail(let paywallInfo),
+         .paywallWebviewLoadComplete(let paywallInfo),
+         .paywallWebviewLoadTimeout(let paywallInfo),
+         .paywallWebviewLoadFallback(let paywallInfo),
+         .paywallWebviewProcessTerminated(let paywallInfo),
+         .stripeCheckoutStart(let paywallInfo),
+         .stripeCheckoutSubmit(let paywallInfo),
+         .stripeCheckoutComplete(let paywallInfo),
+         .stripeCheckoutFail(let paywallInfo),
+         .teleportOpen(let paywallInfo),
+         .paywallPageView(let paywallInfo, _):
         dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .teleportReturn(let paywallInfo):
+        if let paywallInfo = paywallInfo {
+            dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+        }
+
+    case .deviceAttributes(let attributes):
+        dict["deviceAttributes"] = attributes
+
+    case .userAttributes(let attributes):
+        dict["userAttributes"] = attributes
+
+    case .integrationAttributes(let attributes):
+        dict["integrationAttributes"] = attributes
+
+    case .deepLink(let url):
+        dict["deepLinkUrl"] = url.absoluteString
+
+    case .triggerFire(let placementName, let result):
+        dict["placementName"] = placementName
+        dict["result"] = serializeTriggerResult(result)
+
+    case .restoreFail(let message):
+        dict["message"] = message
+
+    case .paywallResponseLoadStart(let triggeredPlacementName),
+         .paywallResponseLoadNotFound(let triggeredPlacementName),
+         .paywallResponseLoadFail(let triggeredPlacementName),
+         .paywallProductsLoadComplete(let triggeredPlacementName):
+        if let name = triggeredPlacementName { dict["triggeredPlacementName"] = name }
+
+    case .paywallResponseLoadComplete(let triggeredPlacementName, let paywallInfo),
+         .paywallProductsLoadStart(let triggeredPlacementName, let paywallInfo),
+         .paywallProductsLoadFail(let triggeredPlacementName, let paywallInfo):
+        if let name = triggeredPlacementName { dict["triggeredPlacementName"] = name }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .paywallProductsLoadRetry(let triggeredPlacementName, let paywallInfo, let attempt):
+        if let name = triggeredPlacementName { dict["triggeredPlacementName"] = name }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+        dict["attempt"] = attempt
+
+    case .paywallProductsLoadMissingProducts(let triggeredPlacementName, let paywallInfo, let identifiers):
+        if let name = triggeredPlacementName { dict["triggeredPlacementName"] = name }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+        dict["missingProductIdentifiers"] = Array(identifiers)
+
+    case .paywallPresentationRequest(let status, _):
+        switch status {
+        case .presentation: dict["status"] = "presentation"
+        case .noPresentation: dict["status"] = "noPresentation"
+        case .timeout: dict["status"] = "timeout"
+        @unknown default: break
+        }
+
+    case .surveyResponse(let survey, let selectedOption, let customResponse, let paywallInfo):
+        dict["survey"] = serializeSurvey(survey)
+        dict["selectedOption"] = serializeSurveyOption(selectedOption)
+        if let customResponse = customResponse { dict["customResponse"] = customResponse }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .customPlacement(let name, _, let paywallInfo):
+        dict["name"] = name
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .adServicesTokenRequestFail(let error):
+        dict["error"] = error.localizedDescription
+
+    case .adServicesTokenRequestComplete(let token):
+        dict["token"] = token
+
+    case .enrichmentComplete(let userEnrichment, let deviceEnrichment):
+        if let userEnrichment = userEnrichment { dict["userEnrichment"] = userEnrichment }
+        if let deviceEnrichment = deviceEnrichment { dict["deviceEnrichment"] = deviceEnrichment }
+
+    case .reviewRequested(let count):
+        dict["reviewRequestedCount"] = count
 
     case .transactionStart(let product, let paywallInfo),
          .transactionAbandon(let product, let paywallInfo),
@@ -427,6 +537,23 @@ private func appendEventPayload(_ event: SuperwallEvent, to dict: inout [String:
     }
 }
 
+private func serializeTriggerResult(_ result: TriggerResult) -> [String: Any] {
+    switch result {
+    case .placementNotFound:
+        return ["type": "placementNotFound"]
+    case .noAudienceMatch:
+        return ["type": "noAudienceMatch"]
+    case .paywall(let experiment):
+        return ["type": "paywall", "experiment": serializeExperiment(experiment) as Any]
+    case .holdout(let experiment):
+        return ["type": "holdout", "experiment": serializeExperiment(experiment) as Any]
+    case .error(let error):
+        return ["type": "error", "error": error.localizedDescription]
+    @unknown default:
+        return ["type": "error"]
+    }
+}
+
 private func serializeEventInfo(_ info: SuperwallEventInfo) -> [String: Any] {
     var dict: [String: Any] = [
         "params": info.params
@@ -447,10 +574,44 @@ private func serializeEventInfo(_ info: SuperwallEventInfo) -> [String: Any] {
     return dict
 }
 
+// Dates are epoch milliseconds, as for entitlements. Optional values are omitted rather than sent as null.
 private func serializeCustomerInfo(_ info: CustomerInfo) -> [String: Any] {
     return [
         "userId": info.userId,
-        "entitlements": info.entitlements.map { serializeEntitlement($0) }
+        "entitlements": info.entitlements.map { serializeEntitlement($0) },
+        "subscriptions": info.subscriptions.map { transaction -> [String: Any] in
+            var dict: [String: Any] = [
+                "transactionId": transaction.transactionId,
+                "productId": transaction.productId,
+                "purchaseDate": epochMilliseconds(transaction.purchaseDate),
+                "willRenew": transaction.willRenew,
+                "isRevoked": transaction.isRevoked,
+                "isInGracePeriod": transaction.isInGracePeriod,
+                "isInBillingRetryPeriod": transaction.isInBillingRetryPeriod,
+                "isActive": transaction.isActive,
+                "store": serializeProductStore(transaction.store)
+            ]
+            if let expirationDate = transaction.expirationDate {
+                dict["expirationDate"] = epochMilliseconds(expirationDate)
+            }
+            if let offerType = transaction.offerType {
+                dict["offerType"] = offerType.rawValue
+            }
+            if let subscriptionGroupId = transaction.subscriptionGroupId {
+                dict["subscriptionGroupId"] = subscriptionGroupId
+            }
+            return dict
+        },
+        "nonSubscriptions": info.nonSubscriptions.map { transaction -> [String: Any] in
+            return [
+                "transactionId": transaction.transactionId,
+                "productId": transaction.productId,
+                "purchaseDate": epochMilliseconds(transaction.purchaseDate),
+                "isConsumable": transaction.isConsumable,
+                "isRevoked": transaction.isRevoked,
+                "store": serializeProductStore(transaction.store)
+            ]
+        }
     ]
 }
 
@@ -471,10 +632,42 @@ private func serializeRedemptionResult(_ result: RedemptionResult) -> [String: A
     }
 }
 
+// Same shape as the Android bridge: `type` tells the ownership and store identifier cases apart.
 private func serializeRedemptionInfo(_ info: RedemptionResult.RedemptionInfo) -> [String: Any] {
-    return [
+    var dict: [String: Any] = [
         "entitlements": serializeEntitlements(info.entitlements)
     ]
+    switch info.ownership {
+    case .appUser(let appUserId):
+        dict["ownership"] = ["type": "appUser", "appUserId": appUserId]
+    case .device(let deviceId):
+        dict["ownership"] = ["type": "device", "deviceId": deviceId]
+    }
+
+    var purchaserInfo: [String: Any] = ["appUserId": info.purchaserInfo.appUserId]
+    if let email = info.purchaserInfo.email {
+        purchaserInfo["email"] = email
+    }
+    switch info.purchaserInfo.storeIdentifiers {
+    case .stripe(let customerId, let subscriptionIds):
+        purchaserInfo["storeIdentifiers"] = ["type": "stripe", "customerId": customerId, "subscriptionIds": subscriptionIds] as [String: Any]
+    case .paddle(let customerId, let subscriptionIds):
+        purchaserInfo["storeIdentifiers"] = ["type": "paddle", "customerId": customerId, "subscriptionIds": subscriptionIds] as [String: Any]
+    case .unknown(let store, let additionalInfo):
+        purchaserInfo["storeIdentifiers"] = ["type": "unknown", "store": store, "additionalInfo": additionalInfo] as [String: Any]
+    }
+    dict["purchaserInfo"] = purchaserInfo
+
+    if let paywallInfo = info.paywallInfo {
+        dict["paywallInfo"] = [
+            "identifier": paywallInfo.identifier,
+            "placementName": paywallInfo.placementName,
+            "placementParams": paywallInfo.placementParams,
+            "variantId": paywallInfo.variantId,
+            "experimentId": paywallInfo.experimentId
+        ] as [String: Any]
+    }
+    return dict
 }
 
 // MARK: - Delegate
@@ -520,12 +713,16 @@ private class SuperwallUnityDelegate: SuperwallDelegate {
     }
 
     func handleLog(level: String, scope: String, message: String?, info: [String: Any]?, error: Swift.Error?) {
-        sendToUnity(method: "handleLog", data: [
+        var data: [String: Any] = [
             "level": level,
             "scope": scope,
             "message": message as Any,
             "error": error?.localizedDescription as Any
-        ])
+        ]
+        if let info = info {
+            data["info"] = info
+        }
+        sendToUnity(method: "handleLog", data: data)
     }
 
     func willRedeemLink() {
@@ -893,7 +1090,9 @@ public func _SuperwallBridge_GetIsInitialized() -> Bool {
 public func _SuperwallBridge_SetUserAttributes(_ attributesJson: UnsafePointer<CChar>) {
     let json = String(cString: attributesJson)
     if let dict = parseJson(json) {
-        Superwall.shared.setUserAttributes(dict)
+        // JSON null arrives as NSNull, which SuperwallKit would store. nil is what removes an attribute.
+        let attributes: [String: Any?] = dict.mapValues { value -> Any? in value is NSNull ? nil : value }
+        Superwall.shared.setUserAttributes(attributes)
     }
 }
 
@@ -981,7 +1180,8 @@ public func _SuperwallBridge_GetEntitlements() -> UnsafePointer<CChar>? {
     let active = serializeEntitlements(entitlements.active)
     let inactive = serializeEntitlements(entitlements.inactive)
     let all = serializeEntitlements(entitlements.all)
-    let dict: [String: Any] = ["active": active, "inactive": inactive, "all": all]
+    let web = serializeEntitlements(entitlements.web)
+    let dict: [String: Any] = ["active": active, "inactive": inactive, "all": all, "web": web]
     return toCString(toJsonString(dict))
 }
 
@@ -1476,9 +1676,9 @@ public func _SuperwallBridge_ShowAlert(_ alertJson: UnsafePointer<CChar>?) {
 }
 
 @_cdecl("_SuperwallBridge_SetLocalResources")
-public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CChar>) {
-    let json = String(cString: resourcesJson)
-    guard let dict = parseJson(json) else {
+public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CChar>?) {
+    // C# passes null to clear the resources.
+    guard let dict = parseJson(toSwiftString(resourcesJson)) else {
         pendingLocalResources = [:]
         return
     }
