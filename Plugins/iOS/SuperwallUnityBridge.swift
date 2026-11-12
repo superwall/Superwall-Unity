@@ -205,8 +205,7 @@ private func epochMilliseconds(_ date: Date) -> Int64 {
 
 // `ProductStore` and `EntitlementType` are `@objc` Int enums, which `String(describing:)` prints as
 // the type name, not the case, so C# could never parse `Entitlement.Store`. Name the cases here, in
-// the vocabulary the Android bridge uses. `custom` has no C# member yet and is sent as `other`, as
-// on Android.
+// the vocabulary the Android bridge uses.
 private func serializeProductStore(_ store: ProductStore) -> String {
     switch store {
     case .appStore: return "appStore"
@@ -214,7 +213,8 @@ private func serializeProductStore(_ store: ProductStore) -> String {
     case .paddle: return "paddle"
     case .playStore: return "playStore"
     case .superwall: return "superwall"
-    case .other, .custom: return "other"
+    case .custom: return "custom"
+    case .other: return "other"
     @unknown default: return "other"
     }
 }
@@ -259,6 +259,15 @@ private func serializeEntitlement(_ entitlement: Entitlement) -> [String: Any] {
     if let offerType = entitlement.offerType {
         dict["offerType"] = offerType.rawValue
     }
+    if let isRevoked = entitlement.isRevoked {
+        dict["isRevoked"] = isRevoked
+    }
+    if let renewsAt = entitlement.renewsAt {
+        dict["renewsAt"] = epochMilliseconds(renewsAt)
+    }
+    if let isInGracePeriod = entitlement.isInGracePeriod {
+        dict["isInGracePeriod"] = isInGracePeriod
+    }
     return dict
 }
 
@@ -277,6 +286,12 @@ private func serializePaywallInfo(_ info: PaywallInfo) -> [String: Any] {
                 "id": product.id,
                 "entitlements": product.entitlements.map { serializeEntitlement($0) }
             ]
+            switch product.type {
+            case .appStore: p["store"] = "appStore"
+            case .stripe: p["store"] = "stripe"
+            case .paddle: p["store"] = "paddle"
+            case .custom: p["store"] = "custom"
+            }
             if let name = product.name { p["name"] = name }
             return p
         },
@@ -287,8 +302,15 @@ private func serializePaywallInfo(_ info: PaywallInfo) -> [String: Any] {
         "state": info.state,
         "localNotifications": info.localNotifications.map { serializeLocalNotification($0) },
         "computedPropertyRequests": info.computedPropertyRequests.map { serializeComputedPropertyRequest($0) },
-        "surveys": info.surveys.map { serializeSurvey($0) }
+        "surveys": info.surveys.map { serializeSurvey($0) },
+        "cacheKey": info.cacheKey,
+        "buildId": info.buildId,
+        "isScrollEnabled": info.isScrollEnabled,
+        "isLocal": info.isLocal
     ]
+    if let s = info.shimmerLoadStartTime { dict["shimmerLoadStartTime"] = s }
+    if let s = info.shimmerLoadCompleteTime { dict["shimmerLoadCompleteTime"] = s }
+    if let id = info.presentationId { dict["presentationId"] = id }
     if let name = info.presentedByPlacementWithName { dict["presentedByPlacementWithName"] = name }
     if let id = info.presentedByPlacementWithId { dict["presentedByPlacementWithId"] = id }
     if let at = info.presentedByPlacementAt { dict["presentedByPlacementAt"] = at }
@@ -431,6 +453,19 @@ private func serializeStoreTransaction(_ transaction: StoreTransaction) -> [Stri
     if let revocationDate = transaction.revocationDate {
         dict["revocationDate"] = iso8601String(revocationDate)
     }
+    // The raw values are upper case ("PURCHASED"); C# parses either.
+    dict["state"] = transaction.state.rawValue.lowercased()
+    var payment: [String: Any] = [
+        "productIdentifier": transaction.payment.productIdentifier,
+        "quantity": transaction.payment.quantity
+    ]
+    if let discountIdentifier = transaction.payment.discountIdentifier {
+        payment["discountIdentifier"] = discountIdentifier
+    }
+    dict["payment"] = payment
+    if let appAccountToken = transaction.appAccountToken {
+        dict["appAccountToken"] = appAccountToken.uuidString
+    }
     return dict
 }
 
@@ -542,9 +577,15 @@ private func appendEventPayload(_ event: SuperwallEvent, to dict: inout [String:
         dict["product"] = serializeStoreProduct(product)
         dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
 
-    case .transactionComplete(let transaction, let product, _, let paywallInfo):
+    case .transactionComplete(let transaction, let product, let type, let paywallInfo):
         if let transaction = transaction {
             dict["transaction"] = serializeStoreTransaction(transaction)
+        }
+        switch type {
+        case .nonRecurringProductPurchase: dict["transactionType"] = "nonRecurringProductPurchase"
+        case .freeTrialStart: dict["transactionType"] = "freeTrialStart"
+        case .subscriptionStart: dict["transactionType"] = "subscriptionStart"
+        @unknown default: break
         }
         dict["product"] = serializeStoreProduct(product)
         dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
@@ -569,6 +610,39 @@ private func appendEventPayload(_ event: SuperwallEvent, to dict: inout [String:
         // `TransactionProduct` is a slimmer type than `StoreProduct`; the identifier is what it shares.
         dict["product"] = ["productIdentifier": product.id]
         dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .permissionRequested(let permissionName, let paywallIdentifier),
+         .permissionGranted(let permissionName, let paywallIdentifier),
+         .permissionDenied(let permissionName, let paywallIdentifier):
+        dict["permissionName"] = permissionName
+        dict["paywallIdentifier"] = paywallIdentifier
+
+    case .paywallPreloadStart(let paywallCount),
+         .paywallPreloadComplete(let paywallCount):
+        dict["paywallCount"] = paywallCount
+
+    case .customerCenterOpen(let screen, let presentation):
+        switch screen {
+        case .management: dict["customerCenterScreen"] = "management"
+        case .noPurchases: dict["customerCenterScreen"] = "noPurchases"
+        }
+        dict["customerCenterPresentationStyle"] = presentation == .embedded ? "embedded" : "sheet"
+
+    case .customerCenterAction(let action, let pathId, let productId):
+        dict["customerCenterAction"] = serializeCustomerCenterAction(action)
+        dict["customerCenterPathId"] = pathId
+        if let productId = productId { dict["customerCenterProductId"] = productId }
+
+    case .customerCenterSurveyResponse(let surveyId, let optionId, let action, let pathId, let productId):
+        dict["customerCenterSurveyId"] = surveyId
+        dict["customerCenterSurveyOptionId"] = optionId
+        dict["customerCenterAction"] = serializeCustomerCenterAction(action)
+        dict["customerCenterPathId"] = pathId
+        if let productId = productId { dict["customerCenterProductId"] = productId }
+
+    case .customerCenterRefundRequest(let productId, let status):
+        dict["customerCenterProductId"] = productId
+        dict["customerCenterRefundStatus"] = serializeCustomerCenterRefundStatus(status)
 
     default:
         break
@@ -617,6 +691,7 @@ private func serializeCustomerInfo(_ info: CustomerInfo) -> [String: Any] {
     return [
         "userId": info.userId,
         "entitlements": info.entitlements.map { serializeEntitlement($0) },
+        "activeSubscriptionProductIds": Array(info.activeSubscriptionProductIds),
         "subscriptions": info.subscriptions.map { serializeSubscriptionTransaction($0) },
         "nonSubscriptions": info.nonSubscriptions.map { serializeNonSubscriptionTransaction($0) }
     ]
@@ -701,13 +776,21 @@ private func serializeRedemptionInfo(_ info: RedemptionResult.RedemptionInfo) ->
     dict["purchaserInfo"] = purchaserInfo
 
     if let paywallInfo = info.paywallInfo {
-        dict["paywallInfo"] = [
+        var paywall: [String: Any] = [
             "identifier": paywallInfo.identifier,
             "placementName": paywallInfo.placementName,
             "placementParams": paywallInfo.placementParams,
             "variantId": paywallInfo.variantId,
             "experimentId": paywallInfo.experimentId
-        ] as [String: Any]
+        ]
+        // `productIdentifier` is deprecated in favour of `product.identifier`.
+        if let productIdentifier = paywallInfo.product?.identifier {
+            paywall["productIdentifier"] = productIdentifier
+        }
+        dict["paywallInfo"] = paywall
+    }
+    if let userAttributes = info.userAttributes {
+        dict["userAttributes"] = userAttributes
     }
     return dict
 }
@@ -1831,6 +1914,8 @@ private func serializeStoreProduct(_ product: StoreProduct) -> [String: Any] {
         "locale": product.locale,
         "isFamilyShareable": product.isFamilyShareable,
         "price": NSDecimalNumber(decimal: product.price).doubleValue,
+        // iOS has no base plans or offers, so the full identifier is the product identifier.
+        "fullIdentifier": product.productIdentifier,
         "attributes": product.attributes,
         "entitlements": product.entitlements.map { serializeEntitlement($0) }
     ]
@@ -1851,6 +1936,9 @@ private func serializeStoreProduct(_ product: StoreProduct) -> [String: Any] {
     }
     if let endDate = product.trialPeriodEndDate {
         dict["trialPeriodEndDate"] = ISO8601DateFormatter().string(from: endDate)
+    }
+    if let customTransactionId = product.customTransactionId {
+        dict["customTransactionId"] = customTransactionId
     }
     return dict
 }

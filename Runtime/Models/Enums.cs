@@ -378,6 +378,15 @@ namespace Superwall
         StoreKit2
     }
 
+    /// <summary>iOS only. What the purchase in a transaction complete event was.</summary>
+    [Serializable]
+    public enum TransactionType
+    {
+        NonRecurringProductPurchase,
+        FreeTrialStart,
+        SubscriptionStart
+    }
+
     [Serializable]
     public enum CustomCallbackResultStatus
     {

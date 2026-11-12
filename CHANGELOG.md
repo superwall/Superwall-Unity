@@ -20,6 +20,13 @@ All notable changes to this package will be documented in this file.
 * Adds `PaywallSkippedReason.UserIsSubscribed` (Android only).
 * Adds the `Analytics`, `GrantedEntitlements` (iOS only), `WebEntitlements`, `CustomerCenter`, and `CustomerInfo`, `JsEvaluator`, `PaywallTransactions`, `NativePurchaseController`, `DeepLinks` and `Billing` (Android only) log scopes.
 * Adds the `SingularDeviceId` and `AirbridgeId` integration attributes, plus `FirebaseInstallationId` (iOS only) and `Meta`, `Amplitude`, `Mixpanel`, `GoogleAds`, `GoogleAppSetId` and `Custom` (Android only).
+* Adds `ProductStore.Custom`, for products sold through your own payment system.
+* Adds `IsRevoked`, `RenewsAt` and `IsInGracePeriod` to `Entitlement`, and `ActiveSubscriptionProductIds` to `CustomerInfo`. Android can't tell whether an entitlement was revoked, so `IsRevoked` is null there.
+* Adds `State` (a `StoreTransactionState`), `Payment` (a `StorePayment`) and `AppAccountToken` to `StoreTransaction`, plus the Android-only `PurchaseToken`, which `Consume` takes, and `Signature`.
+* Adds `FullIdentifier` and `CustomTransactionId` to `StoreProduct`, plus the Android-only `ProductType`, `StoreFrontCountryCode` and `IsCustomProduct`.
+* Adds `CacheKey`, `BuildId`, `ShimmerLoadStartTime`, `ShimmerLoadCompleteTime`, `IsScrollEnabled` and `PresentationId` to `PaywallInfo`, plus the iOS-only `IsLocal`, and `Store` to the products in `PaywallInfo.Products`.
+* Adds `RedemptionInfo.UserAttributes` (iOS only) and `RedemptionPaywallInfo.ProductIdentifier`.
+* Adds event values to `SuperwallEventInfo`: `PermissionName` and `PaywallIdentifier` for the permission events, `PaywallCount` for the paywall preload events, `TransactionType` (iOS only) for transaction complete, and `CustomerCenterAction`, `CustomerCenterPathId`, `CustomerCenterProductId`, `CustomerCenterSurveyId`, `CustomerCenterSurveyOptionId`, `CustomerCenterRefundStatus`, `CustomerCenterScreen` and the iOS-only `CustomerCenterPresentationStyle` for the Customer Center events.
 * The native SDKs now report the Unity SDK and its version with the app's device attributes, as the other Superwall wrappers do.
 
 ### Fixes
@@ -42,6 +49,7 @@ All notable changes to this package will be documented in this file.
 * Android: a `GetProducts` call that fails now logs the error instead of silently returning no products.
 
 ### Behaviour changes
+* Entitlements, transactions and products of a custom store now arrive with `ProductStore.Custom`. Before, they arrived as `ProductStore.Other`.
 * Android: a paywall skipped because the user is subscribed now reaches `PaywallPresentationHandler.OnSkip` as `PaywallSkippedReason.UserIsSubscribed`. Before, it arrived as `NoAudienceMatch`.
 * `PaywallOptions.ShouldShowWebPurchaseConfirmationAlert` now defaults to `true`, as in SuperwallKit. Before, passing any `SuperwallOptions` turned the iOS web purchase confirmation alert off. Set it to `false` to keep it off.
 * A new `Entitlement` is now active (`IsActive` defaults to `true`), as `Entitlement(id:)` is natively. `SubscriptionStatus.CreateActive(new List<Entitlement> { new Entitlement { Id = "pro" } })` used to be sent as active with no entitlements, because the setter skips inactive ones.

@@ -13,6 +13,7 @@ import com.superwall.sdk.customercenter.CustomerCenterConfiguration
 import com.superwall.sdk.customercenter.CustomerCenterDelegate
 import com.superwall.sdk.customercenter.CustomerCenterPurchase
 import com.superwall.sdk.customercenter.CustomerCenterRefundStatus
+import com.superwall.sdk.customercenter.CustomerCenterScreenType
 import com.superwall.sdk.delegate.SuperwallDelegate
 import com.superwall.sdk.delegate.PurchaseResult
 import com.superwall.sdk.delegate.RestorationResult
@@ -53,6 +54,7 @@ import com.superwall.sdk.models.internal.RedemptionResult
 import com.superwall.sdk.store.abstractions.product.StoreProduct
 import com.superwall.sdk.store.abstractions.product.StoreProductType
 import com.superwall.sdk.store.abstractions.transactions.StoreTransaction
+import com.superwall.sdk.store.abstractions.transactions.StoreTransactionState
 import com.superwall.sdk.store.abstractions.transactions.StoreTransactionType
 import com.superwall.sdk.store.transactions.RestoreType
 import com.superwall.sdk.store.ProductReplacement
@@ -972,6 +974,14 @@ class SuperwallUnityBridge {
                     put("id", p.compositeId)
                     put("name", p.name)
                     put("entitlements", serializeEntitlementSet(p.entitlements))
+                    put("store", when (p.type) {
+                        is com.superwall.sdk.models.product.ProductItem.StoreProductType.PlayStore -> "playStore"
+                        is com.superwall.sdk.models.product.ProductItem.StoreProductType.AppStore -> "appStore"
+                        is com.superwall.sdk.models.product.ProductItem.StoreProductType.Stripe -> "stripe"
+                        is com.superwall.sdk.models.product.ProductItem.StoreProductType.Paddle -> "paddle"
+                        is com.superwall.sdk.models.product.ProductItem.StoreProductType.Custom -> "custom"
+                        is com.superwall.sdk.models.product.ProductItem.StoreProductType.Other -> "other"
+                    })
                 })
             }
         })
@@ -1044,6 +1054,12 @@ class SuperwallUnityBridge {
         put("surveys", JSONArray().apply {
             info.surveys.forEach { put(serializeSurvey(it)) }
         })
+        put("cacheKey", info.cacheKey)
+        put("buildId", info.buildId)
+        info.shimmerLoadStartTime?.let { put("shimmerLoadStartTime", it) }
+        info.shimmerLoadCompleteTime?.let { put("shimmerLoadCompleteTime", it) }
+        put("isScrollEnabled", info.isScrollEnabled)
+        info.presentationId?.let { put("presentationId", it) }
     }
 
     private fun serializeSurvey(s: com.superwall.sdk.config.models.Survey) = JSONObject().apply {
@@ -1097,6 +1113,9 @@ class SuperwallUnityBridge {
         e.willRenew?.let { put("willRenew", it) }
         serializeSubscriptionState(e.state)?.let { put("state", it) }
         serializeOfferType(e.offerType)?.let { put("offerType", it) }
+        e.isRevoked?.let { put("isRevoked", it) }
+        e.renewsAt?.let { put("renewsAt", it.time) }
+        e.isInGracePeriod?.let { put("isInGracePeriod", it) }
     }
 
     private fun serializeEntitlementType(type: Entitlement.Type) = when (type) {
@@ -1109,8 +1128,8 @@ class SuperwallUnityBridge {
         Store.STRIPE -> "stripe"
         Store.PADDLE -> "paddle"
         Store.SUPERWALL -> "superwall"
-        // `CUSTOM` (superwall-android 2.8+) has no C# counterpart yet.
-        Store.OTHER, Store.CUSTOM -> "other"
+        Store.CUSTOM -> "custom"
+        Store.OTHER -> "other"
     }
 
     // `UNKNOWN` has no C# counterpart and is dropped, leaving `Entitlement.State` null.
@@ -1165,6 +1184,23 @@ class SuperwallUnityBridge {
         t.expirationDate?.let { put("expirationDate", iso8601String(it)) }
         t.offerId?.let { put("offerId", it) }
         t.revocationDate?.let { put("revocationDate", iso8601String(it)) }
+        put("state", when (t.state) {
+            StoreTransactionState.Purchasing -> "purchasing"
+            StoreTransactionState.Purchased -> "purchased"
+            StoreTransactionState.Failed -> "failed"
+            StoreTransactionState.Restored -> "restored"
+            StoreTransactionState.Deferred -> "deferred"
+        })
+        t.payment?.let { payment ->
+            put("payment", JSONObject().apply {
+                put("productIdentifier", payment.productIdentifier)
+                put("quantity", payment.quantity)
+                payment.discountIdentifier?.let { put("discountIdentifier", it) }
+            })
+        }
+        t.appAccountToken?.let { put("appAccountToken", it) }
+        put("purchaseToken", t.purchaseToken)
+        t.signature?.let { put("signature", it) }
     }
 
     // The fields of a `SuperwallEvent` are what a consumer needs to act on a purchase (the product,
@@ -1276,8 +1312,38 @@ class SuperwallUnityBridge {
                 json.put("product", JSONObject().put("productIdentifier", event.product.id))
                 json.put("paywallInfo", serializePaywallInfo(event.paywallInfo))
             }
+            is SuperwallEvent.PermissionRequested -> putPermission(json, event.permissionName, event.paywallIdentifier)
+            is SuperwallEvent.PermissionGranted -> putPermission(json, event.permissionName, event.paywallIdentifier)
+            is SuperwallEvent.PermissionDenied -> putPermission(json, event.permissionName, event.paywallIdentifier)
+            is SuperwallEvent.PaywallPreloadStart -> json.put("paywallCount", event.paywallCount)
+            is SuperwallEvent.PaywallPreloadComplete -> json.put("paywallCount", event.paywallCount)
+            is SuperwallEvent.CustomerCenterOpen -> json.put("customerCenterScreen", when (event.screen) {
+                CustomerCenterScreenType.MANAGEMENT -> "management"
+                CustomerCenterScreenType.NO_PURCHASES -> "noPurchases"
+            })
+            is SuperwallEvent.CustomerCenterAction -> {
+                json.put("customerCenterAction", serializeCustomerCenterAction(event.action))
+                json.put("customerCenterPathId", event.pathId)
+                event.productId?.let { json.put("customerCenterProductId", it) }
+            }
+            is SuperwallEvent.CustomerCenterSurveyResponse -> {
+                json.put("customerCenterSurveyId", event.surveyId)
+                json.put("customerCenterSurveyOptionId", event.optionId)
+                json.put("customerCenterAction", serializeCustomerCenterAction(event.action))
+                json.put("customerCenterPathId", event.pathId)
+                event.productId?.let { json.put("customerCenterProductId", it) }
+            }
+            is SuperwallEvent.CustomerCenterRefundRequest -> {
+                json.put("customerCenterProductId", event.productId)
+                json.put("customerCenterRefundStatus", serializeCustomerCenterRefundStatus(event.status))
+            }
             else -> {}
         }
+    }
+
+    private fun putPermission(json: JSONObject, permissionName: String, paywallIdentifier: String) {
+        json.put("permissionName", permissionName)
+        json.put("paywallIdentifier", paywallIdentifier)
     }
 
     private fun putTriggeredPlacementName(json: JSONObject, name: String?) {
@@ -1307,6 +1373,7 @@ class SuperwallUnityBridge {
     internal fun serializeCustomerInfo(info: CustomerInfo) = JSONObject().apply {
         put("userId", info.userId)
         put("entitlements", JSONArray().apply { info.entitlements.forEach { put(serializeEntitlement(it)) } })
+        put("activeSubscriptionProductIds", JSONArray(info.activeSubscriptionProductIds.toList()))
         put("subscriptions", JSONArray().apply { info.subscriptions.forEach { put(serializeSubscriptionTransaction(it)) } })
         put("nonSubscriptions", JSONArray().apply { info.nonSubscriptions.forEach { put(serializeNonSubscriptionTransaction(it)) } })
     }
@@ -1377,6 +1444,12 @@ class SuperwallUnityBridge {
         product.regionCode?.let { put("regionCode", it) }
         put("price", product.price.toString())
         put("productType", product.productType)
+        product.storeFrontCountryCode?.let { put("storeFrontCountryCode", it) }
+        // Custom products and their transaction ids exist on StoreProduct, not the StoreProductType of other products.
+        (product as? StoreProduct)?.let { storeProduct ->
+            put("isCustomProduct", storeProduct.isCustomProduct)
+            storeProduct.customTransactionId?.let { put("customTransactionId", it) }
+        }
         put("attributes", JSONObject(product.attributes))
     }
 
@@ -1448,6 +1521,7 @@ class SuperwallUnityBridge {
                 put("placementParams", jsonObjectOf(paywall.placementParams))
                 put("variantId", paywall.variantId)
                 put("experimentId", paywall.experimentId)
+                paywall.productIdentifier?.let { put("productIdentifier", it) }
             })
         }
         put("entitlements", serializeEntitlementSet(info.entitlements.toSet()))

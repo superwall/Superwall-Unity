@@ -19,5 +19,33 @@ namespace Superwall
         public string ExpirationDate;
         public string OfferId;
         public string RevocationDate;
+        public StoreTransactionState? State;
+        /// <summary>The payment the transaction is for.</summary>
+        public StorePayment Payment;
+        /// <summary>The UUID the app associated with the purchase, if any.</summary>
+        public string AppAccountToken;
+        /// <summary>Android only. The Google Play purchase token, which <see cref="Superwall.Consume"/> takes.</summary>
+        public string PurchaseToken;
+        /// <summary>Android only. The purchase's signature from Google Play.</summary>
+        public string Signature;
+    }
+
+    [Serializable]
+    public enum StoreTransactionState
+    {
+        Purchasing,
+        Purchased,
+        Failed,
+        Restored,
+        Deferred
+    }
+
+    [Serializable]
+    public class StorePayment
+    {
+        public string ProductIdentifier;
+        public int Quantity;
+        /// <summary>The ID of the discount offer applied, if any.</summary>
+        public string DiscountIdentifier;
     }
 }

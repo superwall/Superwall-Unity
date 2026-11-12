@@ -23,6 +23,12 @@ namespace Superwall
         public bool? WillRenew;
         public LatestSubscriptionState? State;
         public LatestSubscriptionOfferType? OfferType;
+        /// <summary>Whether the latest transaction was refunded or revoked. Null when unknown.</summary>
+        public bool? IsRevoked;
+        /// <summary>When the subscription renews, in epoch milliseconds, if it will. Null when it won't or isn't known.</summary>
+        public long? RenewsAt;
+        /// <summary>Whether the subscription is in its billing grace period. Null when unknown.</summary>
+        public bool? IsInGracePeriod;
     }
 
     [Serializable]

@@ -855,6 +855,9 @@ namespace Superwall
                 string offerStr = dict["offerType"] as string;
                 if (offerStr != null && Enum.TryParse<LatestSubscriptionOfferType>(offerStr, true, out var ot)) e.OfferType = ot;
             }
+            if (dict.ContainsKey("isRevoked") && dict["isRevoked"] is bool revoked) e.IsRevoked = revoked;
+            if (dict.ContainsKey("renewsAt") && dict["renewsAt"] != null) e.RenewsAt = Convert.ToInt64(dict["renewsAt"]);
+            if (dict.ContainsKey("isInGracePeriod") && dict["isInGracePeriod"] is bool grace) e.IsInGracePeriod = grace;
             return e;
         }
 
@@ -1069,6 +1072,11 @@ namespace Superwall
             p.IsFamilyShareable = dict.ContainsKey("isFamilyShareable") && dict["isFamilyShareable"] is bool ifs && ifs;
             p.RegionCode = dict.ContainsKey("regionCode") ? dict["regionCode"] as string : null;
             p.Price = dict.ContainsKey("price") ? ToDoubleInvariant(dict["price"]) : 0;
+            p.FullIdentifier = dict.ContainsKey("fullIdentifier") ? dict["fullIdentifier"] as string : null;
+            p.ProductType = dict.ContainsKey("productType") ? dict["productType"] as string : null;
+            p.StoreFrontCountryCode = dict.ContainsKey("storeFrontCountryCode") ? dict["storeFrontCountryCode"] as string : null;
+            p.IsCustomProduct = dict.ContainsKey("isCustomProduct") && dict["isCustomProduct"] is bool custom && custom;
+            p.CustomTransactionId = dict.ContainsKey("customTransactionId") ? dict["customTransactionId"] as string : null;
 
             if (dict.ContainsKey("entitlements") && dict["entitlements"] is List<object> entList)
             {

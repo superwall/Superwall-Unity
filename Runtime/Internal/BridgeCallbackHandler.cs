@@ -388,6 +388,12 @@ namespace Superwall.Internal
             var offerTypeStr = GetString(data, "offerType");
             entitlement.OfferType = ParseEnum<LatestSubscriptionOfferType>(offerTypeStr);
 
+            if (data.ContainsKey("isRevoked") && data["isRevoked"] != null)
+                entitlement.IsRevoked = GetBool(data, "isRevoked");
+            entitlement.RenewsAt = data.ContainsKey("renewsAt") && data["renewsAt"] != null ? (long?)GetLong(data, "renewsAt") : null;
+            if (data.ContainsKey("isInGracePeriod") && data["isInGracePeriod"] != null)
+                entitlement.IsInGracePeriod = GetBool(data, "isInGracePeriod");
+
             return entitlement;
         }
 
@@ -486,6 +492,16 @@ namespace Superwall.Internal
 
             info.State = GetDict(data, "state");
 
+            info.CacheKey = GetString(data, "cacheKey");
+            info.BuildId = GetString(data, "buildId");
+            info.ShimmerLoadStartTime = GetString(data, "shimmerLoadStartTime");
+            info.ShimmerLoadCompleteTime = GetString(data, "shimmerLoadCompleteTime");
+            if (data.ContainsKey("isScrollEnabled") && data["isScrollEnabled"] != null)
+                info.IsScrollEnabled = GetBool(data, "isScrollEnabled");
+            info.PresentationId = GetString(data, "presentationId");
+            if (data.ContainsKey("isLocal") && data["isLocal"] != null)
+                info.IsLocal = GetBool(data, "isLocal");
+
             return info;
         }
 
@@ -495,6 +511,7 @@ namespace Superwall.Internal
             var p = new Product();
             p.Id = GetString(data, "id");
             p.Name = GetString(data, "name");
+            p.Store = ParseEnum<ProductStore>(GetString(data, "store"));
             var entList = GetList(data, "entitlements");
             if (entList != null)
             {
@@ -591,6 +608,8 @@ namespace Superwall.Internal
 
             var info = new CustomerInfo();
             info.UserId = GetString(data, "userId");
+            info.ActiveSubscriptionProductIds = GetList(data, "activeSubscriptionProductIds")?
+                .Select(p => p?.ToString()).Where(p => p != null).ToList();
 
             var entitlementsList = GetList(data, "entitlements");
             if (entitlementsList != null)
@@ -753,6 +772,18 @@ namespace Superwall.Internal
             var missingList = GetList(data, "missingProductIdentifiers");
             if (missingList != null)
                 info.MissingProductIdentifiers = missingList.Select(p => p?.ToString()).Where(p => p != null).ToList();
+            info.PermissionName = GetString(data, "permissionName");
+            info.PaywallIdentifier = GetString(data, "paywallIdentifier");
+            info.PaywallCount = GetIntNullable(data, "paywallCount");
+            info.TransactionType = ParseEnum<TransactionType>(GetString(data, "transactionType"));
+            info.CustomerCenterAction = DeserializeCustomerCenterAction(GetDict(data, "customerCenterAction"));
+            info.CustomerCenterPathId = GetString(data, "customerCenterPathId");
+            info.CustomerCenterProductId = GetString(data, "customerCenterProductId");
+            info.CustomerCenterSurveyId = GetString(data, "customerCenterSurveyId");
+            info.CustomerCenterSurveyOptionId = GetString(data, "customerCenterSurveyOptionId");
+            info.CustomerCenterRefundStatus = ParseEnum<CustomerCenterRefundStatus>(GetString(data, "customerCenterRefundStatus"));
+            info.CustomerCenterScreen = ParseEnum<CustomerCenterScreenType>(GetString(data, "customerCenterScreen"));
+            info.CustomerCenterPresentationStyle = ParseEnum<CustomerCenterPresentationStyle>(GetString(data, "customerCenterPresentationStyle"));
 
             return info;
         }
@@ -790,6 +821,20 @@ namespace Superwall.Internal
             transaction.ExpirationDate = GetString(data, "expirationDate");
             transaction.OfferId = GetString(data, "offerId");
             transaction.RevocationDate = GetString(data, "revocationDate");
+            transaction.State = ParseEnum<StoreTransactionState>(GetString(data, "state"));
+            var paymentDict = GetDict(data, "payment");
+            if (paymentDict != null)
+            {
+                transaction.Payment = new StorePayment
+                {
+                    ProductIdentifier = GetString(paymentDict, "productIdentifier"),
+                    Quantity = GetIntNullable(paymentDict, "quantity") ?? 0,
+                    DiscountIdentifier = GetString(paymentDict, "discountIdentifier"),
+                };
+            }
+            transaction.AppAccountToken = GetString(data, "appAccountToken");
+            transaction.PurchaseToken = GetString(data, "purchaseToken");
+            transaction.Signature = GetString(data, "signature");
             return transaction;
         }
 
@@ -869,6 +914,7 @@ namespace Superwall.Internal
                     PlacementParams = GetDict(paywallDict, "placementParams"),
                     VariantId = GetString(paywallDict, "variantId"),
                     ExperimentId = GetString(paywallDict, "experimentId"),
+                    ProductIdentifier = GetString(paywallDict, "productIdentifier"),
                 };
             }
 
@@ -882,6 +928,8 @@ namespace Superwall.Internal
                         info.Entitlements.Add(DeserializeEntitlement(entDict));
                 }
             }
+
+            info.UserAttributes = GetDict(data, "userAttributes");
 
             return info;
         }

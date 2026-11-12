@@ -10,6 +10,8 @@ namespace Superwall
         public List<NonSubscriptionTransaction> NonSubscriptions;
         public List<Entitlement> Entitlements;
         public string UserId;
+        /// <summary>The product IDs of the user's active subscriptions.</summary>
+        public List<string> ActiveSubscriptionProductIds;
     }
 
     [Serializable]

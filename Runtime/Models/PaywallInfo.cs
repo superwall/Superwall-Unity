@@ -37,6 +37,18 @@ namespace Superwall
         public List<ComputedPropertyRequest> ComputedPropertyRequests;
         public List<Survey> Surveys;
         public Dictionary<string, object> State;
+        /// <summary>Identifies the cached copy of the paywall.</summary>
+        public string CacheKey;
+        /// <summary>Identifies the build of the paywall.</summary>
+        public string BuildId;
+        public string ShimmerLoadStartTime;
+        public string ShimmerLoadCompleteTime;
+        /// <summary>Whether the paywall can be scrolled.</summary>
+        public bool? IsScrollEnabled;
+        /// <summary>Identifies this presentation of the paywall.</summary>
+        public string PresentationId;
+        /// <summary>iOS only. Whether the paywall was loaded from files bundled with the app.</summary>
+        public bool? IsLocal;
     }
 
     [Serializable]
@@ -45,6 +57,8 @@ namespace Superwall
         public string Id;
         public string Name;
         public List<Entitlement> Entitlements;
+        /// <summary>The store the product is sold through.</summary>
+        public ProductStore? Store;
     }
 
     [Serializable]

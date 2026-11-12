@@ -47,5 +47,18 @@ namespace Superwall
         public bool IsFamilyShareable;
         public string RegionCode;
         public double Price;
+        /// <summary>
+        /// The identifier including the base plan and offer on Android (<c>product:basePlan:offer</c>); the same as
+        /// <see cref="ProductIdentifier"/> on iOS.
+        /// </summary>
+        public string FullIdentifier;
+        /// <summary>Android only. The Google Play product type, such as <c>subs</c> or <c>inapp</c>.</summary>
+        public string ProductType;
+        /// <summary>Android only. The country code of the user's Google Play store front.</summary>
+        public string StoreFrontCountryCode;
+        /// <summary>Android only. Whether this is a custom product, sold through your own payment system. On iOS see <see cref="CustomTransactionId"/>.</summary>
+        public bool IsCustomProduct;
+        /// <summary>The ID Superwall generated for a purchase of a custom product. Null for any other product.</summary>
+        public string CustomTransactionId;
     }
 }
