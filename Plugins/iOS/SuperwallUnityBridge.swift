@@ -1,5 +1,6 @@
 import Foundation
 import SuperwallKit
+import UIKit
 import UserNotifications
 
 // UnitySendMessage is a C function provided by the Unity runtime at link time.
@@ -616,39 +617,43 @@ private func serializeCustomerInfo(_ info: CustomerInfo) -> [String: Any] {
     return [
         "userId": info.userId,
         "entitlements": info.entitlements.map { serializeEntitlement($0) },
-        "subscriptions": info.subscriptions.map { transaction -> [String: Any] in
-            var dict: [String: Any] = [
-                "transactionId": transaction.transactionId,
-                "productId": transaction.productId,
-                "purchaseDate": epochMilliseconds(transaction.purchaseDate),
-                "willRenew": transaction.willRenew,
-                "isRevoked": transaction.isRevoked,
-                "isInGracePeriod": transaction.isInGracePeriod,
-                "isInBillingRetryPeriod": transaction.isInBillingRetryPeriod,
-                "isActive": transaction.isActive,
-                "store": serializeProductStore(transaction.store)
-            ]
-            if let expirationDate = transaction.expirationDate {
-                dict["expirationDate"] = epochMilliseconds(expirationDate)
-            }
-            if let offerType = transaction.offerType {
-                dict["offerType"] = offerType.rawValue
-            }
-            if let subscriptionGroupId = transaction.subscriptionGroupId {
-                dict["subscriptionGroupId"] = subscriptionGroupId
-            }
-            return dict
-        },
-        "nonSubscriptions": info.nonSubscriptions.map { transaction -> [String: Any] in
-            return [
-                "transactionId": transaction.transactionId,
-                "productId": transaction.productId,
-                "purchaseDate": epochMilliseconds(transaction.purchaseDate),
-                "isConsumable": transaction.isConsumable,
-                "isRevoked": transaction.isRevoked,
-                "store": serializeProductStore(transaction.store)
-            ]
-        }
+        "subscriptions": info.subscriptions.map { serializeSubscriptionTransaction($0) },
+        "nonSubscriptions": info.nonSubscriptions.map { serializeNonSubscriptionTransaction($0) }
+    ]
+}
+
+private func serializeSubscriptionTransaction(_ transaction: SubscriptionTransaction) -> [String: Any] {
+    var dict: [String: Any] = [
+        "transactionId": transaction.transactionId,
+        "productId": transaction.productId,
+        "purchaseDate": epochMilliseconds(transaction.purchaseDate),
+        "willRenew": transaction.willRenew,
+        "isRevoked": transaction.isRevoked,
+        "isInGracePeriod": transaction.isInGracePeriod,
+        "isInBillingRetryPeriod": transaction.isInBillingRetryPeriod,
+        "isActive": transaction.isActive,
+        "store": serializeProductStore(transaction.store)
+    ]
+    if let expirationDate = transaction.expirationDate {
+        dict["expirationDate"] = epochMilliseconds(expirationDate)
+    }
+    if let offerType = transaction.offerType {
+        dict["offerType"] = offerType.rawValue
+    }
+    if let subscriptionGroupId = transaction.subscriptionGroupId {
+        dict["subscriptionGroupId"] = subscriptionGroupId
+    }
+    return dict
+}
+
+private func serializeNonSubscriptionTransaction(_ transaction: NonSubscriptionTransaction) -> [String: Any] {
+    return [
+        "transactionId": transaction.transactionId,
+        "productId": transaction.productId,
+        "purchaseDate": epochMilliseconds(transaction.purchaseDate),
+        "isConsumable": transaction.isConsumable,
+        "isRevoked": transaction.isRevoked,
+        "store": serializeProductStore(transaction.store)
     ]
 }
 
@@ -926,11 +931,205 @@ final class UnityCustomCallbacks {
     }
 }
 
+// MARK: - Customer Center
+
+// The configuration C# sends (Superwall.SerializeCustomerCenterConfiguration). A path whose type can't be built
+// here, such as a URL path whose URL doesn't parse, is left out.
+private func parseCustomerCenterConfiguration(_ dict: [String: Any]) -> CustomerCenterConfiguration {
+    let defaults = CustomerCenterConfiguration.default
+    let support = dict["support"] as? [String: Any] ?? [:]
+    var accent: CustomerCenterConfiguration.Appearance.ColorPair?
+    if let pair = dict["accent"] as? [String: Any], let light = pair["light"] as? String, let dark = pair["dark"] as? String {
+        accent = CustomerCenterConfiguration.Appearance.ColorPair(light: light, dark: dark)
+    }
+    return CustomerCenterConfiguration(
+        managementScreen: (dict["managementScreen"] as? [String: Any]).map(parseCustomerCenterScreen) ?? defaults.managementScreen,
+        noPurchasesScreen: (dict["noPurchasesScreen"] as? [String: Any]).map(parseCustomerCenterScreen) ?? defaults.noPurchasesScreen,
+        support: CustomerCenterConfiguration.Support(
+            email: support["email"] as? String,
+            latestAppVersion: support["latestAppVersion"] as? String,
+            warnsAboutUpdates: support["warnsAboutUpdates"] as? Bool ?? true,
+            checksAppStoreForUpdates: support["checksAppStoreForUpdates"] as? Bool ?? true,
+            webManagementURL: (support["webManagementUrl"] as? String).flatMap { URL(string: $0) }
+        ),
+        appearance: CustomerCenterConfiguration.Appearance(accent: accent),
+        showsAccountDetails: dict["showsAccountDetails"] as? Bool ?? true,
+        warnsAboutDuplicateSubscriptions: dict["warnsAboutDuplicateSubscriptions"] as? Bool ?? true
+    )
+}
+
+private func parseCustomerCenterScreen(_ dict: [String: Any]) -> CustomerCenterConfiguration.Screen {
+    let paths = (dict["paths"] as? [[String: Any]] ?? []).compactMap { path -> CustomerCenterConfiguration.Path? in
+        guard let type = parseCustomerCenterPathType(path) else { return nil }
+        var survey: CustomerCenterConfiguration.FeedbackSurvey?
+        if let surveyDict = path["survey"] as? [String: Any], let surveyId = surveyDict["id"] as? String {
+            let options = (surveyDict["options"] as? [[String: Any]] ?? []).compactMap { option -> CustomerCenterConfiguration.FeedbackSurvey.Option? in
+                guard let id = option["id"] as? String else { return nil }
+                return CustomerCenterConfiguration.FeedbackSurvey.Option(id: id, title: option["title"] as? String)
+            }
+            survey = CustomerCenterConfiguration.FeedbackSurvey(id: surveyId, title: surveyDict["title"] as? String, options: options)
+        }
+        return CustomerCenterConfiguration.Path(id: path["id"] as? String, type: type, title: path["title"] as? String, survey: survey)
+    }
+    return CustomerCenterConfiguration.Screen(title: dict["title"] as? String, subtitle: dict["subtitle"] as? String, paths: paths)
+}
+
+private func parseCustomerCenterPathType(_ dict: [String: Any]) -> CustomerCenterConfiguration.PathType? {
+    switch dict["type"] as? String {
+    case "restore": return .restore
+    case "manageSubscription": return .manageSubscription
+    // C# sends milliseconds, as Android takes them; SuperwallKit takes seconds.
+    case "refund": return .refund(window: (dict["windowMillis"] as? Double).map { $0 / 1000 })
+    case "changePlan": return .changePlan(productIds: dict["productIds"] as? [String])
+    case "contactSupport": return .contactSupport
+    case "url":
+        guard let string = dict["url"] as? String, let url = URL(string: string) else { return nil }
+        return .url(url, openMethod: dict["openMethod"] as? String == "external" ? .external : .inApp)
+    case "custom":
+        guard let identifier = dict["identifier"] as? String else { return nil }
+        return .custom(identifier: identifier)
+    default: return nil
+    }
+}
+
+private func serializeCustomerCenterAction(_ action: CustomerCenterAction) -> [String: Any] {
+    switch action {
+    case .restore: return ["type": "restore"]
+    case .manageSubscription: return ["type": "manageSubscription"]
+    case .refund: return ["type": "refund"]
+    case .changePlan: return ["type": "changePlan"]
+    case .contactSupport: return ["type": "contactSupport"]
+    case .url(let url): return ["type": "url", "url": url.absoluteString]
+    case .custom(let identifier): return ["type": "custom", "identifier": identifier]
+    }
+}
+
+private func serializeCustomerCenterRefundStatus(_ status: CustomerCenterRefundStatus) -> String {
+    switch status {
+    case .success: return "success"
+    case .userCancelled: return "userCancelled"
+    default: return "error"
+    }
+}
+
+private func serializeCustomerCenterPurchase(_ purchase: CustomerCenterPurchase) -> [String: Any] {
+    var dict: [String: Any] = [
+        "store": serializeProductStore(purchase.store),
+        "entitlements": serializeEntitlements(purchase.entitlements)
+    ]
+    if let productId = purchase.productId { dict["productId"] = productId }
+    if let subscription = purchase.subscription { dict["subscription"] = serializeSubscriptionTransaction(subscription) }
+    if let nonSubscription = purchase.nonSubscription { dict["nonSubscription"] = serializeNonSubscriptionTransaction(nonSubscription) }
+    return dict
+}
+
+/// Holds each Customer Center restore until C# answers ShouldRestorePurchases. The restore waits on `request`, and
+/// C# answers through `respond` with the same callbackId.
+final class UnityCustomerCenterRestores {
+    private var pending: [String: CheckedContinuation<Bool, Never>] = [:]
+    private let lock = NSLock()
+    private let send: (String, [String: Any]) -> Bool
+
+    init(send: @escaping (String, [String: Any]) -> Bool) {
+        self.send = send
+    }
+
+    @MainActor
+    func request(presentationId: String) async -> Bool {
+        let callbackId = UUID().uuidString
+        return await withCheckedContinuation { continuation in
+            lock.lock()
+            pending[callbackId] = continuation
+            lock.unlock()
+            let sent = send("customerCenterShouldRestorePurchases", [
+                "presentationId": presentationId,
+                "callbackId": callbackId
+            ])
+            // C# never got the question, so restore, as SuperwallKit does without a delegate.
+            if !sent {
+                respond(callbackId: callbackId, proceed: true)
+            }
+        }
+    }
+
+    func respond(callbackId: String, proceed: Bool) {
+        lock.lock()
+        let continuation = pending.removeValue(forKey: callbackId)
+        lock.unlock()
+        continuation?.resume(returning: proceed)
+    }
+}
+
+/// Forwards one presentation's Customer Center events to C#, tagged with the id C# registered its delegate under.
+@MainActor
+private final class UnityCustomerCenterDelegate: CustomerCenterDelegate {
+    let presentationId: String
+
+    init(presentationId: String) {
+        self.presentationId = presentationId
+    }
+
+    func customerCenterShouldRestorePurchases() async -> Bool {
+        return await unityCustomerCenterRestores.request(presentationId: presentationId)
+    }
+
+    func customerCenterDidSelectAction(_ action: CustomerCenterAction, pathId: String, purchase: CustomerCenterPurchase?) {
+        var data: [String: Any] = [
+            "presentationId": presentationId,
+            "action": serializeCustomerCenterAction(action),
+            "pathId": pathId
+        ]
+        if let purchase = purchase { data["purchase"] = serializeCustomerCenterPurchase(purchase) }
+        sendToUnity(method: "customerCenterDidSelectAction", data: data)
+    }
+
+    func customerCenterDidCompleteSurvey(surveyId: String, optionId: String, action: CustomerCenterAction, pathId: String) {
+        sendToUnity(method: "customerCenterDidCompleteSurvey", data: [
+            "presentationId": presentationId,
+            "surveyId": surveyId,
+            "optionId": optionId,
+            "action": serializeCustomerCenterAction(action),
+            "pathId": pathId
+        ])
+    }
+
+    func customerCenterDidCompleteRefundRequest(productId: String, status: CustomerCenterRefundStatus) {
+        sendToUnity(method: "customerCenterDidCompleteRefundRequest", data: [
+            "presentationId": presentationId,
+            "productId": productId,
+            "status": serializeCustomerCenterRefundStatus(status)
+        ])
+    }
+
+    func customerCenterDidDismiss() {
+        sendToUnity(method: "customerCenterDidDismiss", data: ["presentationId": presentationId])
+    }
+}
+
+/// The Customer Center on screen in any window, if there is one.
+@MainActor
+private func presentedCustomerCenter() -> CustomerCenterViewController? {
+    let windows = UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap { $0.windows }
+    for window in windows {
+        var controller = window.rootViewController
+        while let current = controller {
+            if let customerCenter = current as? CustomerCenterViewController {
+                return customerCenter
+            }
+            controller = current.presentedViewController
+        }
+    }
+    return nil
+}
+
 // MARK: - Stored State
 
 private var unityDelegate: SuperwallUnityDelegate?
 private var unityPurchaseController: UnityPurchaseController?
 let unityCustomCallbacks = UnityCustomCallbacks { method, data in sendToUnity(method: method, data: data) }
+let unityCustomerCenterRestores = UnityCustomerCenterRestores { method, data in sendToUnity(method: method, data: data) }
 private var pendingFeatureHandlers: [String: () -> Void] = [:]
 private var pendingLocalResources: [String: URL] = [:]
 private var didConfigure = false
@@ -979,6 +1178,9 @@ public func _SuperwallBridge_Configure(
         }
         if let experimental = dict["enableExperimentalDeviceVariables"] as? Bool {
             options?.enableExperimentalDeviceVariables = experimental
+        }
+        if let customerCenter = dict["customerCenter"] as? [String: Any] {
+            options?.customerCenter = parseCustomerCenterConfiguration(customerCenter)
         }
         if let gameController = dict["isGameControllerEnabled"] as? Bool {
             options?.isGameControllerEnabled = gameController
@@ -1844,3 +2046,53 @@ public func _SuperwallBridge_SetNotificationsEnabled(_ enabled: Bool) {}
 
 @_cdecl("_SuperwallBridge_HandleNotificationOpen")
 public func _SuperwallBridge_HandleNotificationOpen(_ dataJson: UnsafePointer<CChar>) {}
+
+@_cdecl("_SuperwallBridge_PresentCustomerCenter")
+public func _SuperwallBridge_PresentCustomerCenter(
+    _ configurationJson: UnsafePointer<CChar>?,
+    _ presentationId: UnsafePointer<CChar>,
+    _ hasDelegate: Bool
+) {
+    let json = toSwiftString(configurationJson)
+    let id = String(cString: presentationId)
+    let onDismiss: () -> Void = { sendToUnity(method: "customerCenterOnDismiss", data: ["presentationId": id]) }
+    Task { @MainActor in
+        guard Superwall.isInitialized else {
+            onDismiss()
+            return
+        }
+        let configuration = parseJson(json).map(parseCustomerCenterConfiguration)
+        let previouslyPresented = presentedCustomerCenter()
+        Superwall.shared.presentCustomerCenter(
+            configuration: configuration,
+            delegate: hasDelegate ? UnityCustomerCenterDelegate(presentationId: id) : nil,
+            onDismiss: onDismiss
+        )
+        // SuperwallKit only logs when it can't present (one is already presented, or there's nothing to present
+        // from) and then never calls onDismiss. Call it, so C# releases the delegate and runs its onDismiss, as
+        // Android does.
+        let presented = presentedCustomerCenter()
+        if presented == nil || presented === previouslyPresented {
+            onDismiss()
+        }
+    }
+}
+
+@_cdecl("_SuperwallBridge_DismissCustomerCenter")
+public func _SuperwallBridge_DismissCustomerCenter(_ callbackId: UnsafePointer<CChar>?) {
+    let cbId = toSwiftString(callbackId)
+    let completion: () -> Void = { if let cbId = cbId { sendAsyncResponse(callbackId: cbId, data: [:]) } }
+    Task { @MainActor in
+        // SuperwallKit returns without calling the completion when it isn't configured.
+        guard Superwall.isInitialized else {
+            completion()
+            return
+        }
+        Superwall.shared.dismissCustomerCenter(completion: completion)
+    }
+}
+
+@_cdecl("_SuperwallBridge_RespondToCustomerCenterShouldRestore")
+public func _SuperwallBridge_RespondToCustomerCenterShouldRestore(_ callbackId: UnsafePointer<CChar>, _ proceed: Bool) {
+    unityCustomerCenterRestores.respond(callbackId: String(cString: callbackId), proceed: proceed)
+}

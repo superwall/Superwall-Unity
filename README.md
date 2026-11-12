@@ -277,6 +277,29 @@ For custom products its `OldProductId` comes from the active entitlements you re
 `OldPurchaseToken` is null. Implementing `PurchaseCustomProduct` is optional: by default it fails
 the purchase.
 
+## Customer Center
+
+The Customer Center is a screen where users view and manage their subscriptions, request refunds, restore purchases and contact support.
+
+```csharp
+var configuration = CustomerCenterConfiguration.Default;
+configuration.Support.Email = "support@example.com";
+configuration.ManagementScreen.Paths.Add(CustomerCenterPath.ForUrl("https://example.com/faq", "FAQ"));
+
+Superwall.Shared.PresentCustomerCenter(configuration, new MyCustomerCenterDelegate(), onDismiss: () => { });
+
+class MyCustomerCenterDelegate : ICustomerCenterDelegate
+{
+    // Every method is optional.
+    public void DidSelectAction(CustomerCenterAction action, string pathId, CustomerCenterPurchase purchase)
+    {
+        if (action.Type == CustomerCenterActionType.Custom) { /* action.Identifier */ }
+    }
+}
+```
+
+Set the configuration once with `SuperwallOptions.CustomerCenter` to use it whenever `PresentCustomerCenter` isn't given one. `ICustomerCenterDelegate.ShouldRestorePurchases` is only called on iOS: on Android the Customer Center opens in its own activity, which pauses Unity, so restores go ahead without asking.
+
 ## User Identity
 
 ```csharp
@@ -430,6 +453,8 @@ Superwall.Shared.LocaleIdentifier = "en_US";
 | `GetDeviceAttributes(callback)` | Get device attributes |
 | `ShowAlert(title?, message?, ...)` | Show alert on current paywall (Android only; iOS calls `onClose` at once) |
 | `RefreshConfiguration()` | Force config refresh |
+| `PresentCustomerCenter(configuration?, delegate?, onDismiss?)` | Show the Customer Center |
+| `DismissCustomerCenter(completion?)` | Close the Customer Center |
 
 ## License
 

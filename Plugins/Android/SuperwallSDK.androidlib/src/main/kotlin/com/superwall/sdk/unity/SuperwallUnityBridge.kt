@@ -8,6 +8,11 @@ import com.superwall.sdk.config.options.AdConsent
 import com.superwall.sdk.config.options.AdConsentStatus
 import com.superwall.sdk.config.options.EventTrackingBehavior
 import com.superwall.sdk.config.options.SuperwallOptions
+import com.superwall.sdk.customercenter.CustomerCenterAction
+import com.superwall.sdk.customercenter.CustomerCenterConfiguration
+import com.superwall.sdk.customercenter.CustomerCenterDelegate
+import com.superwall.sdk.customercenter.CustomerCenterPurchase
+import com.superwall.sdk.customercenter.CustomerCenterRefundStatus
 import com.superwall.sdk.delegate.SuperwallDelegate
 import com.superwall.sdk.delegate.PurchaseResult
 import com.superwall.sdk.delegate.RestorationResult
@@ -26,6 +31,8 @@ import com.superwall.sdk.store.abstractions.product.receipt.LatestSubscriptionSt
 import com.superwall.sdk.models.entitlements.SubscriptionStatus
 import com.superwall.sdk.models.triggers.Experiment
 import com.superwall.sdk.models.customer.CustomerInfo
+import com.superwall.sdk.models.customer.NonSubscriptionTransaction
+import com.superwall.sdk.models.customer.SubscriptionTransaction
 import com.superwall.sdk.network.device.InterfaceStyle
 import com.superwall.sdk.paywall.presentation.CustomCallback
 import com.superwall.sdk.paywall.presentation.CustomCallbackResult
@@ -784,6 +791,174 @@ class SuperwallUnityBridge {
         } catch (_: JSONException) {}
     }
 
+    fun presentCustomerCenter(configurationJson: String?, presentationId: String, hasDelegate: Boolean) {
+        val configuration = configurationJson?.let {
+            try { parseCustomerCenterConfiguration(JSONObject(it)) } catch (_: JSONException) { null }
+        }
+        val onDismiss: () -> Unit = {
+            sendToUnity("customerCenterOnDismiss", JSONObject().put("presentationId", presentationId))
+        }
+        // The SDK presents it from the main thread; Unity calls in on its own.
+        scope.launch {
+            if (!Superwall.initialized) {
+                onDismiss()
+                return@launch
+            }
+            val delegate = if (hasDelegate) UnityCustomerCenterDelegate(presentationId) else null
+            Superwall.instance.presentCustomerCenter(configuration, delegate, onDismiss)
+        }
+    }
+
+    fun dismissCustomerCenter(callbackId: String?) {
+        val completion: () -> Unit = { callbackId?.let { sendAsyncResponse(it, JSONObject()) } }
+        scope.launch {
+            if (!Superwall.initialized) {
+                completion()
+                return@launch
+            }
+            Superwall.instance.dismissCustomerCenter(completion)
+        }
+    }
+
+    // C# only answers ShouldRestorePurchases on iOS: see UnityCustomerCenterDelegate.
+    fun respondToCustomerCenterShouldRestore(callbackId: String, proceed: Boolean) {}
+
+    /**
+     * Forwards one presentation's Customer Center events to C#, tagged with the id C# registered its delegate under.
+     * `customerCenterShouldRestorePurchases` keeps the SDK's default, which restores: the Customer Center is its own
+     * activity, which pauses Unity, so C# couldn't answer until it closed and the restore would wait for ever.
+     */
+    private inner class UnityCustomerCenterDelegate(private val presentationId: String) : CustomerCenterDelegate {
+        override fun customerCenterDidSelectAction(action: CustomerCenterAction, pathId: String, purchase: CustomerCenterPurchase?) {
+            sendToUnity("customerCenterDidSelectAction", JSONObject().apply {
+                put("presentationId", presentationId)
+                put("action", serializeCustomerCenterAction(action))
+                put("pathId", pathId)
+                purchase?.let { put("purchase", serializeCustomerCenterPurchase(it)) }
+            })
+        }
+
+        override fun customerCenterDidCompleteSurvey(surveyId: String, optionId: String, action: CustomerCenterAction, pathId: String) {
+            sendToUnity("customerCenterDidCompleteSurvey", JSONObject().apply {
+                put("presentationId", presentationId)
+                put("surveyId", surveyId)
+                put("optionId", optionId)
+                put("action", serializeCustomerCenterAction(action))
+                put("pathId", pathId)
+            })
+        }
+
+        override fun customerCenterDidCompleteRefundRequest(productId: String, status: CustomerCenterRefundStatus) {
+            sendToUnity("customerCenterDidCompleteRefundRequest", JSONObject().apply {
+                put("presentationId", presentationId)
+                put("productId", productId)
+                put("status", serializeCustomerCenterRefundStatus(status))
+            })
+        }
+
+        override fun customerCenterDidDismiss() {
+            sendToUnity("customerCenterDidDismiss", JSONObject().put("presentationId", presentationId))
+        }
+    }
+
+    // The configuration C# sends (Superwall.SerializeCustomerCenterConfiguration). A path whose type can't be built,
+    // such as a URL path with no URL, is left out.
+    internal fun parseCustomerCenterConfiguration(json: JSONObject): CustomerCenterConfiguration {
+        val defaults = CustomerCenterConfiguration.default
+        val support = json.optJSONObject("support") ?: JSONObject()
+        val accent = json.optJSONObject("accent")?.let { pair ->
+            val light = pair.stringOrNull("light")
+            val dark = pair.stringOrNull("dark")
+            if (light != null && dark != null) CustomerCenterConfiguration.Appearance.ColorPair(light, dark) else null
+        }
+        return CustomerCenterConfiguration(
+            managementScreen = json.optJSONObject("managementScreen")?.let(::parseCustomerCenterScreen) ?: defaults.managementScreen,
+            noPurchasesScreen = json.optJSONObject("noPurchasesScreen")?.let(::parseCustomerCenterScreen) ?: defaults.noPurchasesScreen,
+            support = CustomerCenterConfiguration.Support(
+                email = support.stringOrNull("email"),
+                latestAppVersion = support.stringOrNull("latestAppVersion"),
+                warnsAboutUpdates = support.optBoolean("warnsAboutUpdates", true),
+                webManagementUrl = support.stringOrNull("webManagementUrl"),
+            ),
+            appearance = CustomerCenterConfiguration.Appearance(accent),
+            showsAccountDetails = json.optBoolean("showsAccountDetails", true),
+            warnsAboutDuplicateSubscriptions = json.optBoolean("warnsAboutDuplicateSubscriptions", true),
+        )
+    }
+
+    private fun parseCustomerCenterScreen(json: JSONObject): CustomerCenterConfiguration.Screen {
+        val paths = json.optJSONArray("paths")
+        return CustomerCenterConfiguration.Screen(
+            title = json.stringOrNull("title"),
+            subtitle = json.stringOrNull("subtitle"),
+            paths = (0 until (paths?.length() ?: 0)).mapNotNull { i -> paths?.optJSONObject(i)?.let(::parseCustomerCenterPath) },
+        )
+    }
+
+    private fun parseCustomerCenterPath(json: JSONObject): CustomerCenterConfiguration.Path? {
+        val type = when (json.optString("type")) {
+            "restore" -> CustomerCenterConfiguration.PathType.Restore
+            "manageSubscription" -> CustomerCenterConfiguration.PathType.ManageSubscription
+            "refund" -> CustomerCenterConfiguration.PathType.Refund(if (json.isNull("windowMillis")) null else json.getLong("windowMillis"))
+            "changePlan" -> CustomerCenterConfiguration.PathType.ChangePlan(
+                json.optJSONArray("productIds")?.let { ids -> (0 until ids.length()).map { ids.getString(it) } }
+            )
+            "contactSupport" -> CustomerCenterConfiguration.PathType.ContactSupport
+            "url" -> CustomerCenterConfiguration.PathType.Url(
+                json.stringOrNull("url") ?: return null,
+                if (json.optString("openMethod") == "external") CustomerCenterConfiguration.OpenMethod.EXTERNAL
+                else CustomerCenterConfiguration.OpenMethod.IN_APP,
+            )
+            "custom" -> CustomerCenterConfiguration.PathType.Custom(json.stringOrNull("identifier") ?: return null)
+            else -> return null
+        }
+        val survey = json.optJSONObject("survey")?.let { surveyJson ->
+            val id = surveyJson.stringOrNull("id") ?: return@let null
+            val options = surveyJson.optJSONArray("options")
+            CustomerCenterConfiguration.FeedbackSurvey(
+                id = id,
+                title = surveyJson.stringOrNull("title"),
+                options = (0 until (options?.length() ?: 0)).mapNotNull { i ->
+                    options?.optJSONObject(i)?.let { option ->
+                        option.stringOrNull("id")?.let { CustomerCenterConfiguration.FeedbackSurvey.Option(it, option.stringOrNull("title")) }
+                    }
+                },
+            )
+        }
+        return CustomerCenterConfiguration.Path(
+            type = type,
+            title = json.stringOrNull("title"),
+            survey = survey,
+            id = json.stringOrNull("id") ?: type.defaultId,
+        )
+    }
+
+    internal fun serializeCustomerCenterAction(action: CustomerCenterAction) = JSONObject().apply {
+        when (action) {
+            CustomerCenterAction.Restore -> put("type", "restore")
+            CustomerCenterAction.ManageSubscription -> put("type", "manageSubscription")
+            CustomerCenterAction.Refund -> put("type", "refund")
+            CustomerCenterAction.ChangePlan -> put("type", "changePlan")
+            CustomerCenterAction.ContactSupport -> put("type", "contactSupport")
+            is CustomerCenterAction.Url -> put("type", "url").put("url", action.url)
+            is CustomerCenterAction.Custom -> put("type", "custom").put("identifier", action.identifier)
+        }
+    }
+
+    internal fun serializeCustomerCenterRefundStatus(status: CustomerCenterRefundStatus) = when (status) {
+        CustomerCenterRefundStatus.SUCCESS -> "success"
+        CustomerCenterRefundStatus.USER_CANCELLED -> "userCancelled"
+        CustomerCenterRefundStatus.ERROR -> "error"
+    }
+
+    internal fun serializeCustomerCenterPurchase(purchase: CustomerCenterPurchase) = JSONObject().apply {
+        purchase.productId?.let { put("productId", it) }
+        put("store", serializeStore(purchase.store))
+        put("entitlements", serializeEntitlementSet(purchase.entitlements))
+        purchase.subscription?.let { put("subscription", serializeSubscriptionTransaction(it)) }
+        purchase.nonSubscription?.let { put("nonSubscription", serializeNonSubscriptionTransaction(it)) }
+    }
+
     // --- Serialization ---
 
     private fun serializePaywallInfo(info: PaywallInfo) = JSONObject().apply {
@@ -1132,36 +1307,32 @@ class SuperwallUnityBridge {
     internal fun serializeCustomerInfo(info: CustomerInfo) = JSONObject().apply {
         put("userId", info.userId)
         put("entitlements", JSONArray().apply { info.entitlements.forEach { put(serializeEntitlement(it)) } })
-        put("subscriptions", JSONArray().apply {
-            info.subscriptions.forEach { t ->
-                put(JSONObject().apply {
-                    put("transactionId", t.transactionId)
-                    put("productId", t.productId)
-                    put("purchaseDate", t.purchaseDate.time)
-                    put("willRenew", t.willRenew)
-                    put("isRevoked", t.isRevoked)
-                    put("isInGracePeriod", t.isInGracePeriod)
-                    put("isInBillingRetryPeriod", t.isInBillingRetryPeriod)
-                    put("isActive", t.isActive)
-                    t.expirationDate?.let { put("expirationDate", it.time) }
-                    serializeOfferType(t.offerType)?.let { put("offerType", it) }
-                    t.subscriptionGroupId?.let { put("subscriptionGroupId", it) }
-                    put("store", serializeStore(t.store))
-                })
-            }
-        })
-        put("nonSubscriptions", JSONArray().apply {
-            info.nonSubscriptions.forEach { t ->
-                put(JSONObject().apply {
-                    put("transactionId", t.transactionId)
-                    put("productId", t.productId)
-                    put("purchaseDate", t.purchaseDate.time)
-                    put("isConsumable", t.isConsumable)
-                    put("isRevoked", t.isRevoked)
-                    put("store", serializeStore(t.store))
-                })
-            }
-        })
+        put("subscriptions", JSONArray().apply { info.subscriptions.forEach { put(serializeSubscriptionTransaction(it)) } })
+        put("nonSubscriptions", JSONArray().apply { info.nonSubscriptions.forEach { put(serializeNonSubscriptionTransaction(it)) } })
+    }
+
+    private fun serializeSubscriptionTransaction(t: SubscriptionTransaction) = JSONObject().apply {
+        put("transactionId", t.transactionId)
+        put("productId", t.productId)
+        put("purchaseDate", t.purchaseDate.time)
+        put("willRenew", t.willRenew)
+        put("isRevoked", t.isRevoked)
+        put("isInGracePeriod", t.isInGracePeriod)
+        put("isInBillingRetryPeriod", t.isInBillingRetryPeriod)
+        put("isActive", t.isActive)
+        t.expirationDate?.let { put("expirationDate", it.time) }
+        serializeOfferType(t.offerType)?.let { put("offerType", it) }
+        t.subscriptionGroupId?.let { put("subscriptionGroupId", it) }
+        put("store", serializeStore(t.store))
+    }
+
+    private fun serializeNonSubscriptionTransaction(t: NonSubscriptionTransaction) = JSONObject().apply {
+        put("transactionId", t.transactionId)
+        put("productId", t.productId)
+        put("purchaseDate", t.purchaseDate.time)
+        put("isConsumable", t.isConsumable)
+        put("isRevoked", t.isRevoked)
+        put("store", serializeStore(t.store))
     }
 
     // Every field of the C# `StoreProduct` model that the Android SDK has. `subscriptionGroupIdentifier`,
@@ -1303,6 +1474,7 @@ class SuperwallUnityBridge {
             parseEventTrackingBehavior(json.optString("eventTrackingBehavior"))?.let { eventTrackingBehavior = it }
             // Only when C# set one, so an unset consent still falls back to a TCF banner's answer.
             json.optJSONObject("adConsent")?.let { adConsent = parseAdConsent(it) }
+            json.optJSONObject("customerCenter")?.let { customerCenter = parseCustomerCenterConfiguration(it) }
             if (json.has("enableExperimentalDeviceVariables")) enableExperimentalDeviceVariables = json.getBoolean("enableExperimentalDeviceVariables")
             if (json.has("isGameControllerEnabled")) isGameControllerEnabled = json.getBoolean("isGameControllerEnabled")
             if (json.has("passIdentifiersToPlayStore")) passIdentifiersToPlayStore = json.getBoolean("passIdentifiersToPlayStore")
@@ -1652,6 +1824,9 @@ private fun JSONObject.putReplacement(replacement: ProductReplacement?) {
         put("oldPurchaseToken", replacement.oldPurchaseToken ?: JSONObject.NULL)
     })
 }
+
+/** The string at [key], or null when it's missing or JSON null (`optString` would return "null"). */
+private fun JSONObject.stringOrNull(key: String): String? = if (isNull(key)) null else optString(key)
 
 /**
  * A JSON object from C# as the maps and lists the SDK expects. Nested objects and arrays used to be passed on as

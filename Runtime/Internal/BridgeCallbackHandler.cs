@@ -24,6 +24,10 @@ namespace Superwall.Internal
         private readonly Dictionary<string, Action<string>> _pendingAsyncCallbacks =
             new Dictionary<string, Action<string>>();
 
+        // The delegate and onDismiss of each Customer Center presentation, until native reports it dismissed.
+        private readonly Dictionary<string, (ICustomerCenterDelegate customerCenterDelegate, Action onDismiss)> _customerCenters =
+            new Dictionary<string, (ICustomerCenterDelegate, Action)>();
+
         // Purchase/restore callbackIds native stopped waiting for. Bounded; completions may
         // arrive off the main thread, so access is locked.
         private const int MaxAbandonedPurchaseCallbacks = 32;
@@ -57,6 +61,11 @@ namespace Superwall.Internal
         public void RegisterAsyncCallback(string callbackId, Action<string> callback)
         {
             _pendingAsyncCallbacks[callbackId] = callback;
+        }
+
+        public void RegisterCustomerCenter(string presentationId, ICustomerCenterDelegate customerCenterDelegate, Action onDismiss)
+        {
+            _customerCenters[presentationId] = (customerCenterDelegate, onDismiss);
         }
 
         // Called by native code via UnitySendMessage("SuperwallBridge", "OnCallback", jsonPayload)
@@ -175,6 +184,30 @@ namespace Superwall.Internal
                     break;
                 case "onCustomCallback":
                     HandleOnCustomCallback(data);
+                    break;
+
+                // --- Customer Center ---
+                case "customerCenterShouldRestorePurchases":
+                    HandleCustomerCenterShouldRestorePurchases(data);
+                    break;
+                case "customerCenterDidSelectAction":
+                    CustomerCenterDelegateFor(data)?.DidSelectAction(
+                        DeserializeCustomerCenterAction(GetDict(data, "action")), GetString(data, "pathId"),
+                        DeserializeCustomerCenterPurchase(GetDict(data, "purchase")));
+                    break;
+                case "customerCenterDidCompleteSurvey":
+                    CustomerCenterDelegateFor(data)?.DidCompleteSurvey(GetString(data, "surveyId"), GetString(data, "optionId"),
+                        DeserializeCustomerCenterAction(GetDict(data, "action")), GetString(data, "pathId"));
+                    break;
+                case "customerCenterDidCompleteRefundRequest":
+                    CustomerCenterDelegateFor(data)?.DidCompleteRefundRequest(GetString(data, "productId"),
+                        ParseEnum<CustomerCenterRefundStatus>(GetString(data, "status")) ?? CustomerCenterRefundStatus.Error);
+                    break;
+                case "customerCenterDidDismiss":
+                    CustomerCenterDelegateFor(data)?.DidDismiss();
+                    break;
+                case "customerCenterOnDismiss":
+                    HandleCustomerCenterOnDismiss(data);
                     break;
 
                 // --- Feature handler ---
@@ -576,22 +609,7 @@ namespace Superwall.Internal
                 info.Subscriptions = new List<SubscriptionTransaction>();
                 foreach (var item in subscriptionsList)
                 {
-                    if (!(item is Dictionary<string, object> t)) continue;
-                    info.Subscriptions.Add(new SubscriptionTransaction
-                    {
-                        TransactionId = GetString(t, "transactionId"),
-                        ProductId = GetString(t, "productId"),
-                        PurchaseDate = GetLong(t, "purchaseDate"),
-                        WillRenew = GetBool(t, "willRenew"),
-                        IsRevoked = GetBool(t, "isRevoked"),
-                        IsInGracePeriod = GetBool(t, "isInGracePeriod"),
-                        IsInBillingRetryPeriod = GetBool(t, "isInBillingRetryPeriod"),
-                        IsActive = GetBool(t, "isActive"),
-                        ExpirationDate = t.ContainsKey("expirationDate") && t["expirationDate"] != null ? (long?)GetLong(t, "expirationDate") : null,
-                        OfferType = ParseEnum<LatestSubscriptionOfferType>(GetString(t, "offerType")),
-                        SubscriptionGroupId = GetString(t, "subscriptionGroupId"),
-                        Store = ParseEnum<ProductStore>(GetString(t, "store")),
-                    });
+                    if (item is Dictionary<string, object> t) info.Subscriptions.Add(DeserializeSubscriptionTransaction(t));
                 }
             }
 
@@ -601,20 +619,79 @@ namespace Superwall.Internal
                 info.NonSubscriptions = new List<NonSubscriptionTransaction>();
                 foreach (var item in nonSubscriptionsList)
                 {
-                    if (!(item is Dictionary<string, object> t)) continue;
-                    info.NonSubscriptions.Add(new NonSubscriptionTransaction
-                    {
-                        TransactionId = GetString(t, "transactionId"),
-                        ProductId = GetString(t, "productId"),
-                        PurchaseDate = GetLong(t, "purchaseDate"),
-                        IsConsumable = GetBool(t, "isConsumable"),
-                        IsRevoked = GetBool(t, "isRevoked"),
-                        Store = ParseEnum<ProductStore>(GetString(t, "store")),
-                    });
+                    if (item is Dictionary<string, object> t) info.NonSubscriptions.Add(DeserializeNonSubscriptionTransaction(t));
                 }
             }
 
             return info;
+        }
+
+        private static SubscriptionTransaction DeserializeSubscriptionTransaction(Dictionary<string, object> t)
+        {
+            if (t == null) return null;
+            return new SubscriptionTransaction
+            {
+                TransactionId = GetString(t, "transactionId"),
+                ProductId = GetString(t, "productId"),
+                PurchaseDate = GetLong(t, "purchaseDate"),
+                WillRenew = GetBool(t, "willRenew"),
+                IsRevoked = GetBool(t, "isRevoked"),
+                IsInGracePeriod = GetBool(t, "isInGracePeriod"),
+                IsInBillingRetryPeriod = GetBool(t, "isInBillingRetryPeriod"),
+                IsActive = GetBool(t, "isActive"),
+                ExpirationDate = t.ContainsKey("expirationDate") && t["expirationDate"] != null ? (long?)GetLong(t, "expirationDate") : null,
+                OfferType = ParseEnum<LatestSubscriptionOfferType>(GetString(t, "offerType")),
+                SubscriptionGroupId = GetString(t, "subscriptionGroupId"),
+                Store = ParseEnum<ProductStore>(GetString(t, "store")),
+            };
+        }
+
+        private static NonSubscriptionTransaction DeserializeNonSubscriptionTransaction(Dictionary<string, object> t)
+        {
+            if (t == null) return null;
+            return new NonSubscriptionTransaction
+            {
+                TransactionId = GetString(t, "transactionId"),
+                ProductId = GetString(t, "productId"),
+                PurchaseDate = GetLong(t, "purchaseDate"),
+                IsConsumable = GetBool(t, "isConsumable"),
+                IsRevoked = GetBool(t, "isRevoked"),
+                Store = ParseEnum<ProductStore>(GetString(t, "store")),
+            };
+        }
+
+        // Both bridges send the action as {type, url?, identifier?} with camelCase type names.
+        internal static CustomerCenterAction DeserializeCustomerCenterAction(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            return new CustomerCenterAction
+            {
+                Type = ParseEnum<CustomerCenterActionType>(GetString(data, "type")) ?? CustomerCenterActionType.Custom,
+                Url = GetString(data, "url"),
+                Identifier = GetString(data, "identifier"),
+            };
+        }
+
+        private static CustomerCenterPurchase DeserializeCustomerCenterPurchase(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var purchase = new CustomerCenterPurchase
+            {
+                ProductId = GetString(data, "productId"),
+                Store = ParseEnum<ProductStore>(GetString(data, "store")),
+                Entitlements = new List<Entitlement>(),
+                Subscription = DeserializeSubscriptionTransaction(GetDict(data, "subscription")),
+                NonSubscription = DeserializeNonSubscriptionTransaction(GetDict(data, "nonSubscription")),
+            };
+            var entitlements = GetList(data, "entitlements");
+            if (entitlements != null)
+            {
+                foreach (var item in entitlements)
+                {
+                    if (item is Dictionary<string, object> e) purchase.Entitlements.Add(DeserializeEntitlement(e));
+                }
+            }
+            return purchase;
         }
 
         private static SuperwallEventInfo DeserializeSuperwallEventInfo(Dictionary<string, object> data)
@@ -1397,6 +1474,66 @@ namespace Superwall.Internal
                 Debug.LogError($"[Superwall] OnCustomCallback threw for '{customCallback.Name}': {e.Message}\n{e.StackTrace}");
             }
             return CustomCallbackResult.Failure();
+        }
+
+        #endregion
+
+        #region Customer Center
+
+        private ICustomerCenterDelegate CustomerCenterDelegateFor(Dictionary<string, object> data)
+        {
+            var presentationId = GetString(data, "presentationId");
+            if (presentationId == null || !_customerCenters.TryGetValue(presentationId, out var presentation)) return null;
+            return presentation.customerCenterDelegate;
+        }
+
+        // Native holds the restore until it gets a reply, so every path here replies, once.
+        private void HandleCustomerCenterShouldRestorePurchases(Dictionary<string, object> data)
+        {
+            var callbackId = GetString(data, "callbackId");
+            var replied = false;
+            Action<bool> proceed = (shouldRestore) =>
+            {
+                if (replied) return;
+                replied = true;
+                SendCustomerCenterShouldRestoreToNative(callbackId, shouldRestore);
+            };
+
+            var customerCenterDelegate = CustomerCenterDelegateFor(data);
+            if (customerCenterDelegate == null)
+            {
+                proceed(true);
+                return;
+            }
+            try
+            {
+                customerCenterDelegate.ShouldRestorePurchases(proceed);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[Superwall] ShouldRestorePurchases threw: {e.Message}\n{e.StackTrace}");
+                proceed(true);
+            }
+        }
+
+        private void HandleCustomerCenterOnDismiss(Dictionary<string, object> data)
+        {
+            var presentationId = GetString(data, "presentationId");
+            if (presentationId == null || !_customerCenters.TryGetValue(presentationId, out var presentation)) return;
+            _customerCenters.Remove(presentationId);
+            presentation.onDismiss?.Invoke();
+        }
+
+        private static void SendCustomerCenterShouldRestoreToNative(string callbackId, bool proceed)
+        {
+            if (string.IsNullOrEmpty(callbackId)) return;
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_RespondToCustomerCenterShouldRestore(callbackId, proceed);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.RespondToCustomerCenterShouldRestore(callbackId, proceed);
+#else
+            Debug.Log($"[Superwall] RespondToCustomerCenterShouldRestore(callbackId={callbackId}, proceed={proceed})");
+#endif
         }
 
         #endregion

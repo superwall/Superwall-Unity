@@ -487,6 +487,37 @@ namespace Superwall
             CallNative_Dismiss();
         }
 
+        // ------- Customer Center -------
+
+        /// <summary>
+        /// Presents the Customer Center, where users view and manage their subscriptions, request refunds, restore
+        /// purchases and contact support. Does nothing while one is already presented.
+        /// </summary>
+        /// <param name="configuration">Null uses <see cref="SuperwallOptions.CustomerCenter"/>.</param>
+        /// <param name="customerCenterDelegate">Receives this presentation's events. Kept until it's dismissed.</param>
+        /// <param name="onDismiss">Called once the Customer Center is dismissed.</param>
+        public void PresentCustomerCenter(CustomerCenterConfiguration configuration = null,
+            ICustomerCenterDelegate customerCenterDelegate = null, Action onDismiss = null)
+        {
+            string presentationId = Guid.NewGuid().ToString();
+            BridgeCallbackHandler.Instance.RegisterCustomerCenter(presentationId, customerCenterDelegate, onDismiss);
+            string configurationJson = configuration != null ? Json.Serialize(SerializeCustomerCenterConfiguration(configuration)) : null;
+            CallNative_PresentCustomerCenter(configurationJson, presentationId, customerCenterDelegate != null);
+        }
+
+        /// <summary>Dismisses the Customer Center presented with <see cref="PresentCustomerCenter"/>, if any.</summary>
+        /// <param name="completion">Called once it has been dismissed, or straight away if none is presented.</param>
+        public void DismissCustomerCenter(Action completion = null)
+        {
+            string callbackId = null;
+            if (completion != null)
+            {
+                callbackId = Guid.NewGuid().ToString();
+                BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) => completion());
+            }
+            CallNative_DismissCustomerCenter(callbackId);
+        }
+
         // ------- Presentation Result -------
 
         public void GetPresentationResult(string placement, Dictionary<string, object> parameters = null, Action<PresentationResult> completion = null)
@@ -885,6 +916,94 @@ namespace Superwall
             }
         }
 
+        // Missing screens are the default's, as both native SDKs require them. Optional values are left out so the
+        // native defaults (localized titles, path IDs) apply.
+        internal static Dictionary<string, object> SerializeCustomerCenterConfiguration(CustomerCenterConfiguration configuration)
+        {
+            var defaults = CustomerCenterConfiguration.Default;
+            var support = configuration.Support ?? new CustomerCenterSupport();
+            var supportDict = new Dictionary<string, object>
+            {
+                { "warnsAboutUpdates", support.WarnsAboutUpdates },
+                { "checksAppStoreForUpdates", support.ChecksAppStoreForUpdates }
+            };
+            if (support.Email != null) supportDict["email"] = support.Email;
+            if (support.LatestAppVersion != null) supportDict["latestAppVersion"] = support.LatestAppVersion;
+            if (support.WebManagementUrl != null) supportDict["webManagementUrl"] = support.WebManagementUrl;
+
+            var dict = new Dictionary<string, object>
+            {
+                { "managementScreen", SerializeCustomerCenterScreen(configuration.ManagementScreen ?? defaults.ManagementScreen) },
+                { "noPurchasesScreen", SerializeCustomerCenterScreen(configuration.NoPurchasesScreen ?? defaults.NoPurchasesScreen) },
+                { "support", supportDict },
+                { "showsAccountDetails", configuration.ShowsAccountDetails },
+                { "warnsAboutDuplicateSubscriptions", configuration.WarnsAboutDuplicateSubscriptions }
+            };
+            if (configuration.Accent != null)
+            {
+                dict["accent"] = new Dictionary<string, object> { { "light", configuration.Accent.Light }, { "dark", configuration.Accent.Dark } };
+            }
+            return dict;
+        }
+
+        private static Dictionary<string, object> SerializeCustomerCenterScreen(CustomerCenterScreen screen)
+        {
+            var paths = new List<object>();
+            if (screen.Paths != null)
+            {
+                foreach (var path in screen.Paths)
+                {
+                    if (path != null) paths.Add(SerializeCustomerCenterPath(path));
+                }
+            }
+            var dict = new Dictionary<string, object> { { "paths", paths } };
+            if (screen.Title != null) dict["title"] = screen.Title;
+            if (screen.Subtitle != null) dict["subtitle"] = screen.Subtitle;
+            return dict;
+        }
+
+        private static Dictionary<string, object> SerializeCustomerCenterPath(CustomerCenterPath path)
+        {
+            var name = path.Type.ToString();
+            var dict = new Dictionary<string, object> { { "type", char.ToLowerInvariant(name[0]) + name.Substring(1) } };
+            if (path.Id != null) dict["id"] = path.Id;
+            if (path.Title != null) dict["title"] = path.Title;
+            switch (path.Type)
+            {
+                case CustomerCenterActionType.Refund:
+                    if (path.RefundWindowMillis.HasValue) dict["windowMillis"] = path.RefundWindowMillis.Value;
+                    break;
+                case CustomerCenterActionType.ChangePlan:
+                    if (path.ProductIds != null) dict["productIds"] = path.ProductIds;
+                    break;
+                case CustomerCenterActionType.Url:
+                    dict["url"] = path.Url;
+                    dict["openMethod"] = path.OpenMethod == CustomerCenterOpenMethod.External ? "external" : "inApp";
+                    break;
+                case CustomerCenterActionType.Custom:
+                    dict["identifier"] = path.Identifier;
+                    break;
+            }
+            if (path.Survey != null)
+            {
+                var options = new List<object>();
+                if (path.Survey.Options != null)
+                {
+                    foreach (var option in path.Survey.Options)
+                    {
+                        if (option == null) continue;
+                        var optionDict = new Dictionary<string, object> { { "id", option.Id } };
+                        if (option.Title != null) optionDict["title"] = option.Title;
+                        options.Add(optionDict);
+                    }
+                }
+                var survey = new Dictionary<string, object> { { "id", path.Survey.Id }, { "options", options } };
+                if (path.Survey.Title != null) survey["title"] = path.Survey.Title;
+                dict["survey"] = survey;
+            }
+            return dict;
+        }
+
         private static T ParseEnumOrDefault<T>(string value, T defaultValue) where T : struct
         {
             return !string.IsNullOrEmpty(value) && Enum.TryParse<T>(value, true, out var parsed) ? parsed : defaultValue;
@@ -1037,6 +1156,7 @@ namespace Superwall
             if (options.StoreKitVersion.HasValue)
                 dict["storeKitVersion"] = options.StoreKitVersion.Value == global::Superwall.StoreKitVersion.StoreKit1 ? "storeKit1" : "storeKit2";
             dict["enableExperimentalDeviceVariables"] = options.EnableExperimentalDeviceVariables;
+            if (options.CustomerCenter != null) dict["customerCenter"] = SerializeCustomerCenterConfiguration(options.CustomerCenter);
             if (options.LocaleIdentifier != null) dict["localeIdentifier"] = options.LocaleIdentifier;
             dict["isGameControllerEnabled"] = options.IsGameControllerEnabled;
             dict["passIdentifiersToPlayStore"] = options.PassIdentifiersToPlayStore;
@@ -1687,6 +1807,28 @@ namespace Superwall
             SuperwallBridgeAndroid.HandleNotificationOpen(dataJson);
 #else
             Debug.Log($"[Superwall] HandleNotificationOpen({dataJson})");
+#endif
+        }
+
+        private static void CallNative_PresentCustomerCenter(string configurationJson, string presentationId, bool hasDelegate)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_PresentCustomerCenter(configurationJson, presentationId, hasDelegate);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.PresentCustomerCenter(configurationJson, presentationId, hasDelegate);
+#else
+            Debug.Log($"[Superwall] PresentCustomerCenter({configurationJson})");
+#endif
+        }
+
+        private static void CallNative_DismissCustomerCenter(string callbackId)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_DismissCustomerCenter(callbackId);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.DismissCustomerCenter(callbackId);
+#else
+            Debug.Log("[Superwall] DismissCustomerCenter()");
 #endif
         }
     }

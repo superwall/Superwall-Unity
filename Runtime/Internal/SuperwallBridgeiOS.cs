@@ -178,6 +178,15 @@ namespace Superwall.Internal
 
         [DllImport("__Internal")]
         internal static extern void _SuperwallBridge_HandleNotificationOpen(string dataJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_PresentCustomerCenter(string configurationJson, string presentationId, bool hasDelegate);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_DismissCustomerCenter(string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_RespondToCustomerCenterShouldRestore(string callbackId, bool proceed);
     }
 #endif
 }

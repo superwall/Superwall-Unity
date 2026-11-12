@@ -313,6 +313,21 @@ namespace Superwall.Internal
         {
             Bridge.Call("handleNotificationOpen", dataJson);
         }
+
+        internal static void PresentCustomerCenter(string configurationJson, string presentationId, bool hasDelegate)
+        {
+            Bridge.Call("presentCustomerCenter", configurationJson, presentationId, hasDelegate);
+        }
+
+        internal static void DismissCustomerCenter(string callbackId)
+        {
+            Bridge.Call("dismissCustomerCenter", callbackId);
+        }
+
+        internal static void RespondToCustomerCenterShouldRestore(string callbackId, bool proceed)
+        {
+            Bridge.Call("respondToCustomerCenterShouldRestore", callbackId, proceed);
+        }
     }
 #endif
 }

@@ -28,6 +28,11 @@ namespace Superwall
         /// <see cref="Superwall.AdConsent"/>.
         /// </summary>
         public AdConsent AdConsent;
+        /// <summary>
+        /// The Customer Center that <see cref="Superwall.PresentCustomerCenter"/> shows when it isn't given one. Null,
+        /// the default, uses <see cref="CustomerCenterConfiguration.Default"/>.
+        /// </summary>
+        public CustomerCenterConfiguration CustomerCenter;
         /// <summary>iOS only. Null, the default, keeps SuperwallKit's default, StoreKit 2.</summary>
         public StoreKitVersion? StoreKitVersion;
         /// <summary>Enables experimental device variables, which are subject to change. Defaults to false.</summary>
