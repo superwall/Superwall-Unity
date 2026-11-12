@@ -7,7 +7,7 @@ This package provides a Unity C# wrapper around the native [SuperwallKit](https:
 ## Requirements
 
 - Unity 6+ (6000.3+)
-- iOS 16.0+
+- iOS 15.0+
 - Android minSdk 25+, compileSdk 35+ (set **Target API Level** to 35 or higher in Player Settings)
 
 ## Installation
@@ -176,6 +176,7 @@ public class MySuperwallHandler : MonoBehaviour, ISuperwallDelegate
         Dictionary<string, object> info, string error) { }
     public void WillRedeemLink() { }
     public void DidRedeemLink(RedemptionResult result) { }
+    // iOS only: the Android SDK has no such callback, so it is never called there.
     public void HandleSuperwallDeepLink(string fullURL, List<string> pathComponents,
         Dictionary<string, string> queryParameters) { }
     public void CustomerInfoDidChange(CustomerInfo from, CustomerInfo to) { }
@@ -352,7 +353,7 @@ Superwall.Shared.HandleDeepLink("https://example.com/link");
 // Dismiss current paywall
 Superwall.Shared.Dismiss();
 
-// Show alert on current paywall
+// Show alert on current paywall (Android only; on iOS it does nothing and calls onClose straight away)
 Superwall.Shared.ShowAlert(title: "Hey!", message: "Check this out");
 
 // Force refresh config
@@ -399,7 +400,7 @@ Superwall.Shared.LocaleIdentifier = "en_US";
 | `RestorePurchases(callback)` | Restore purchases |
 | `GetCustomerInfo(callback)` | Get customer info |
 | `GetDeviceAttributes(callback)` | Get device attributes |
-| `ShowAlert(title?, message?, ...)` | Show alert on current paywall |
+| `ShowAlert(title?, message?, ...)` | Show alert on current paywall (Android only; iOS calls `onClose` at once) |
 | `RefreshConfiguration()` | Force config refresh |
 
 ## License

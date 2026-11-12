@@ -16,6 +16,7 @@ namespace Superwall
         void HandleLog(string level, string scope, string message, Dictionary<string, object> info, string error);
         void WillRedeemLink();
         void DidRedeemLink(RedemptionResult result);
+        /// <summary>iOS only. The Android SDK has no such callback, so this is never called on Android.</summary>
         void HandleSuperwallDeepLink(string fullURL, List<string> pathComponents, Dictionary<string, string> queryParameters);
         void CustomerInfoDidChange(CustomerInfo from, CustomerInfo to);
         void UserAttributesDidChange(Dictionary<string, object> newAttributes);

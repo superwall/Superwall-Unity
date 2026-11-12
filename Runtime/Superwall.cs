@@ -471,7 +471,8 @@ namespace Superwall
         /// <summary>
         /// Map asset names to local file paths for paywall WebViews (served via swlocal:// URLs).
         /// Keys are asset names used in the paywall template, values are absolute file paths.
-        /// Android only — no-op on iOS.
+        /// Pass null to clear them. On Android they can be changed at any time; on iOS they are read
+        /// once by <see cref="Configure"/>, so call this before it.
         /// </summary>
         public void SetLocalResources(Dictionary<string, string> resources)
         {
