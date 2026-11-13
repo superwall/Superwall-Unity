@@ -331,7 +331,8 @@ namespace Superwall.Internal
 
         internal static void ShowEmbeddedPaywall(string viewId, string placement, string paramsJson, float x, float y, float width, float height)
         {
-            Bridge.Call("showEmbeddedPaywall", viewId, placement, paramsJson, x, y, width, height);
+            // An empty string stands for "none": a null argument leaves Unity guessing the Java method's signature.
+            Bridge.Call("showEmbeddedPaywall", viewId, placement, paramsJson ?? "", x, y, width, height);
         }
 
         internal static void SetEmbeddedPaywallRect(string viewId, float x, float y, float width, float height)
@@ -346,12 +347,12 @@ namespace Superwall.Internal
 
         internal static void DismissWithCompletion(string callbackId)
         {
-            Bridge.Call("dismissWithCompletion", callbackId);
+            Bridge.Call("dismissWithCompletion", callbackId ?? "");
         }
 
         internal static void DismissForNextPaywall(string callbackId)
         {
-            Bridge.Call("dismissForNextPaywall", callbackId);
+            Bridge.Call("dismissForNextPaywall", callbackId ?? "");
         }
 
         internal static void OpenRestoreOnWeb()

@@ -2659,6 +2659,10 @@ private final class UnityEmbeddedPaywall: PaywallViewControllerDelegate {
 
     // MARK: PaywallViewControllerDelegate
 
+    // Required of a delegate outside SuperwallKit: its default implementation isn't public. The paywall shows its
+    // own loading state, so there's nothing to pass on.
+    func paywall(_ paywall: PaywallViewController, loadingStateDidChange loadingState: PaywallLoadingState) {}
+
     func paywall(_ paywall: PaywallViewController, didFinishWith result: PaywallResult, shouldDismiss: Bool) {
         // A paywall this view has let go of may still report to it.
         guard paywall === paywallViewController else { return }

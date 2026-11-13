@@ -562,17 +562,18 @@ class SuperwallUnityBridge {
 
     fun dismiss() { Superwall.instance.dismissSync() }
 
-    fun dismissWithCompletion(callbackId: String?) {
+    // C# sends an empty callbackId when there is no completion to call.
+    fun dismissWithCompletion(callbackId: String) {
         scope.launch {
             if (Superwall.initialized) Superwall.instance.dismiss()
-            callbackId?.let { sendAsyncResponse(it, JSONObject()) }
+            if (callbackId.isNotEmpty()) sendAsyncResponse(callbackId, JSONObject())
         }
     }
 
-    fun dismissForNextPaywall(callbackId: String?) {
+    fun dismissForNextPaywall(callbackId: String) {
         scope.launch {
             if (Superwall.initialized) Superwall.instance.dismissForNextPaywall()
-            callbackId?.let { sendAsyncResponse(it, JSONObject()) }
+            if (callbackId.isNotEmpty()) sendAsyncResponse(callbackId, JSONObject())
         }
     }
 
@@ -672,8 +673,9 @@ class SuperwallUnityBridge {
     // --- Embedded paywall ---
 
     // x, y, width and height are fractions of the activity's content view, with y measured from the top.
-    fun showEmbeddedPaywall(viewId: String, placement: String, paramsJson: String?, x: Float, y: Float, width: Float, height: Float) {
-        val params = paramsJson?.let {
+    // C# sends an empty paramsJson when there are no parameters.
+    fun showEmbeddedPaywall(viewId: String, placement: String, paramsJson: String, x: Float, y: Float, width: Float, height: Float) {
+        val params = paramsJson.takeIf { it.isNotEmpty() }?.let {
             try {
                 @Suppress("UNCHECKED_CAST")
                 (jsonToMap(JSONObject(it)).filterValues { value -> value != null } as Map<String, Any>)
