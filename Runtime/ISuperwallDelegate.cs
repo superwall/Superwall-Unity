@@ -2,23 +2,27 @@ using System.Collections.Generic;
 
 namespace Superwall
 {
+    /// <summary>
+    /// Receives the SDK's events. Pass it to <see cref="Superwall.SetDelegate"/>. Every method has a default
+    /// implementation that does nothing, so implement only the ones you need.
+    /// </summary>
     public interface ISuperwallDelegate
     {
-        void SubscriptionStatusDidChange(SubscriptionStatus from, SubscriptionStatus to);
-        void HandleSuperwallEvent(SuperwallEventInfo eventInfo);
-        void HandleCustomPaywallAction(string name);
-        void WillDismissPaywall(PaywallInfo paywallInfo);
-        void WillPresentPaywall(PaywallInfo paywallInfo);
-        void DidDismissPaywall(PaywallInfo paywallInfo);
-        void DidPresentPaywall(PaywallInfo paywallInfo);
-        void PaywallWillOpenURL(string url);
-        void PaywallWillOpenDeepLink(string url);
-        void HandleLog(string level, string scope, string message, Dictionary<string, object> info, string error);
-        void WillRedeemLink();
-        void DidRedeemLink(RedemptionResult result);
+        void SubscriptionStatusDidChange(SubscriptionStatus from, SubscriptionStatus to) { }
+        void HandleSuperwallEvent(SuperwallEventInfo eventInfo) { }
+        void HandleCustomPaywallAction(string name) { }
+        void WillDismissPaywall(PaywallInfo paywallInfo) { }
+        void WillPresentPaywall(PaywallInfo paywallInfo) { }
+        void DidDismissPaywall(PaywallInfo paywallInfo) { }
+        void DidPresentPaywall(PaywallInfo paywallInfo) { }
+        void PaywallWillOpenURL(string url) { }
+        void PaywallWillOpenDeepLink(string url) { }
+        void HandleLog(string level, string scope, string message, Dictionary<string, object> info, string error) { }
+        void WillRedeemLink() { }
+        void DidRedeemLink(RedemptionResult result) { }
         /// <summary>iOS only. The Android SDK has no such callback, so this is never called on Android.</summary>
-        void HandleSuperwallDeepLink(string fullURL, List<string> pathComponents, Dictionary<string, string> queryParameters);
-        void CustomerInfoDidChange(CustomerInfo from, CustomerInfo to);
-        void UserAttributesDidChange(Dictionary<string, object> newAttributes);
+        void HandleSuperwallDeepLink(string fullURL, List<string> pathComponents, Dictionary<string, string> queryParameters) { }
+        void CustomerInfoDidChange(CustomerInfo from, CustomerInfo to) { }
+        void UserAttributesDidChange(Dictionary<string, object> newAttributes) { }
     }
 }

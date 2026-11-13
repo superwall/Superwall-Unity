@@ -60,5 +60,40 @@ namespace Superwall
         public bool IsCustomProduct;
         /// <summary>The ID Superwall generated for a purchase of a custom product. Null for any other product.</summary>
         public string CustomTransactionId;
+        /// <summary>The length of one subscription period. Null for a product that isn't a subscription.</summary>
+        public SubscriptionPeriod SubscriptionPeriod;
+        /// <summary>iOS only. The introductory offer, such as a free trial, if the product has one.</summary>
+        public StoreProductDiscount IntroductoryDiscount;
+        /// <summary>iOS only. The product's promotional offers. Empty when it has none; null on Android.</summary>
+        public List<StoreProductDiscount> Discounts;
+        /// <summary>iOS only. The App Store billing plan in use for the product, if there is one on this device.</summary>
+        public BillingPlanType? BillingPlanType;
+        /// <summary>iOS only. Whether a billing plan is set for the product and available on this device.</summary>
+        public bool IsBillingPlanAvailable;
+    }
+
+    [Serializable]
+    public class SubscriptionPeriod
+    {
+        /// <summary>How many <see cref="Unit"/>s the period lasts.</summary>
+        public int Value;
+        public SubscriptionPeriodUnit Unit;
+    }
+
+    /// <summary>iOS only. An introductory or promotional offer of a product.</summary>
+    [Serializable]
+    public class StoreProductDiscount
+    {
+        /// <summary>The offer's identifier. Null for an introductory offer.</summary>
+        public string OfferIdentifier;
+        public string CurrencyCode;
+        public double Price;
+        public string LocalizedPriceString;
+        public DiscountPaymentMode PaymentMode;
+        /// <summary>The length of one period of the discount.</summary>
+        public SubscriptionPeriod SubscriptionPeriod;
+        /// <summary>How many periods the discount lasts.</summary>
+        public int NumberOfPeriods;
+        public DiscountType Type;
     }
 }

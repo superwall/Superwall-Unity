@@ -53,7 +53,8 @@ class PurchaseRequestTest {
 
         assertEquals("com.app.annual", request.getString("productId"))
         assertEquals("annual", request.getString("basePlanId"))
-        assertEquals("", request.getString("offerId"))
+        // No offer is null, not an empty string: C# passes it on as null.
+        assertTrue(request.isNull("offerId"))
         assertEquals("cb-2", request.getString("callbackId"))
         assertFalse(request.has("customTransactionId"))
         val sent: JSONObject = request.getJSONObject("replacement")

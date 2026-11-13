@@ -328,6 +328,56 @@ namespace Superwall.Internal
         {
             Bridge.Call("respondToCustomerCenterShouldRestore", callbackId, proceed);
         }
+
+        internal static void DismissWithCompletion(string callbackId)
+        {
+            Bridge.Call("dismissWithCompletion", callbackId);
+        }
+
+        internal static void DismissForNextPaywall(string callbackId)
+        {
+            Bridge.Call("dismissForNextPaywall", callbackId);
+        }
+
+        internal static void OpenRestoreOnWeb()
+        {
+            Bridge.Call("openRestoreOnWeb");
+        }
+
+        internal static string GetExternalAccountId()
+        {
+            return Bridge.Call<string>("getExternalAccountId");
+        }
+
+        internal static void ObservePurchaseStart(string productId)
+        {
+            Bridge.Call("observePurchaseStart", productId);
+        }
+
+        internal static void ObservePurchaseError(string productId, string error)
+        {
+            Bridge.Call("observePurchaseError", productId, error);
+        }
+
+        internal static void ObservePurchaseResult(int billingResponseCode, string debugMessage, string purchasesJson)
+        {
+            Bridge.Call("observePurchaseResult", billingResponseCode, debugMessage, purchasesJson);
+        }
+
+        internal static void DispatchGameControllerKeyEvent(int keyCode, bool isPressed)
+        {
+            Bridge.Call("dispatchGameControllerKeyEvent", keyCode, isPressed);
+        }
+
+        internal static void DispatchGameControllerMotionEvent(float x, float y)
+        {
+            Bridge.Call("dispatchGameControllerMotionEvent", x, y);
+        }
+
+        internal static void Teardown()
+        {
+            Bridge.Call("teardown");
+        }
     }
 #endif
 }

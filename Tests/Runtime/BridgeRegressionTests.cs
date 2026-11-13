@@ -251,7 +251,8 @@ namespace Superwall.Tests
             Assert.AreEqual(LatestSubscriptionOfferType.Trial, premium.OfferType);
 
             Assert.AreEqual(LatestSubscriptionState.InBillingRetryPeriod, entitlements[1].State);
-            Assert.IsNull(entitlements[1].OfferType, "an Android-only offer type must stay null, not be mislabelled");
+            Assert.AreEqual(LatestSubscriptionOfferType.Subscription, entitlements[1].OfferType,
+                "Android's paid period arrives under its own name, not as one of the offers");
         }
 
         // --- Integration attributes reach native under the native names ---

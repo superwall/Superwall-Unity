@@ -15,6 +15,11 @@ namespace Superwall
         public Action<PaywallInfo, PaywallResult> OnDismiss;
         public Action<string> OnError;
         public Action<PaywallSkippedReason> OnSkip;
+        /// <summary>
+        /// Like <see cref="OnSkip"/>, with the experiment whose holdout group the user is in when the reason is
+        /// <see cref="PaywallSkippedReason.Holdout"/>, and null for the other reasons. Both are called when both are set.
+        /// </summary>
+        public Action<PaywallSkippedReason, Experiment> OnSkipWithExperiment;
 
         /// <summary>
         /// Runs when the paywall requests a custom callback, for work such as creating an account

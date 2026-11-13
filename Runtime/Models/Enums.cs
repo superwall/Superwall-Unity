@@ -63,7 +63,11 @@ namespace Superwall
     {
         Release,
         ReleaseCandidate,
-        Developer
+        Developer,
+        /// <summary>iOS only. A Superwall backend running on localhost. Android has no such environment and uses <see cref="Release"/>.</summary>
+        Local,
+        /// <summary>The environment described by <see cref="SuperwallOptions.CustomNetworkEnvironment"/>.</summary>
+        Custom
     }
 
     [Serializable]
@@ -179,7 +183,9 @@ namespace Superwall
         Subscribed,
         Expired,
         InBillingRetryPeriod,
-        Revoked
+        Revoked,
+        /// <summary>Android only. The store reported a state the SDK doesn't know.</summary>
+        Unknown
     }
 
     [Serializable]
@@ -188,7 +194,11 @@ namespace Superwall
         Trial,
         Code,
         Promotional,
-        Winback
+        Winback,
+        /// <summary>Android only. A regular paid period, with no offer applied.</summary>
+        Subscription,
+        /// <summary>Android only. The latest period was revoked.</summary>
+        Revoked
     }
 
     [Serializable]
@@ -392,5 +402,121 @@ namespace Superwall
     {
         Success,
         Failure
+    }
+
+    /// <summary>How a paywall is presented, as set on the dashboard.</summary>
+    [Serializable]
+    public enum PaywallPresentationStyle
+    {
+        Modal,
+        Fullscreen,
+        FullscreenNoAnimation,
+        Push,
+        /// <summary>Slides up to cover part of the screen. See <see cref="PaywallPresentationInfo.Height"/> and <see cref="PaywallPresentationInfo.CornerRadius"/>.</summary>
+        Drawer,
+        /// <summary>Pops over the screen. See <see cref="PaywallPresentationInfo.Height"/>, <see cref="PaywallPresentationInfo.Width"/> and <see cref="PaywallPresentationInfo.CornerRadius"/>.</summary>
+        Popup,
+        None
+    }
+
+    /// <summary>iOS only. Whether the paywall treats the user as eligible for introductory offers.</summary>
+    [Serializable]
+    public enum IntroOfferEligibility
+    {
+        Eligible,
+        Ineligible,
+        /// <summary>The store decides.</summary>
+        Automatic
+    }
+
+    /// <summary>iOS only. The App Store billing plan of a product.</summary>
+    [Serializable]
+    public enum BillingPlanType
+    {
+        UpFront,
+        Monthly
+    }
+
+    /// <summary>Android only. Which Google Play offer a paywall product uses.</summary>
+    [Serializable]
+    public enum PlayStoreOfferType
+    {
+        /// <summary>The SDK picks the best offer the user is eligible for.</summary>
+        Automatic,
+        /// <summary>The base plan, with no offer.</summary>
+        NoOffer,
+        /// <summary>The offer named by <see cref="PlayStoreProduct.OfferIdentifier"/>.</summary>
+        Specified
+    }
+
+    [Serializable]
+    public enum SubscriptionPeriodUnit
+    {
+        Day,
+        Week,
+        Month,
+        Year
+    }
+
+    /// <summary>iOS only. How a discount is paid for.</summary>
+    [Serializable]
+    public enum DiscountPaymentMode
+    {
+        PayAsYouGo,
+        PayUpFront,
+        FreeTrial
+    }
+
+    /// <summary>iOS only.</summary>
+    [Serializable]
+    public enum DiscountType
+    {
+        Introductory,
+        Promotional
+    }
+
+    /// <summary>Who matched an install to an ad, for the attribution match event.</summary>
+    [Serializable]
+    public enum AttributionMatchProvider
+    {
+        Mmp,
+        /// <summary>iOS only.</summary>
+        AppleSearchAds
+    }
+
+    [Serializable]
+    public enum AttributionMatchConfidence
+    {
+        High,
+        Medium,
+        Low
+    }
+
+    /// <summary>Why a paywall presentation request ended as it did, for the paywall presentation request event.</summary>
+    [Serializable]
+    public enum PaywallPresentationRequestStatusReasonType
+    {
+        DebuggerPresented,
+        PaywallAlreadyPresented,
+        /// <summary>The user is in a holdout group. See <see cref="PaywallPresentationRequestStatusReason.Experiment"/>.</summary>
+        Holdout,
+        NoAudienceMatch,
+        PlacementNotFound,
+        NoPaywallViewController,
+        NoPresenter,
+        NoConfig,
+        SubscriptionStatusTimeout
+    }
+
+    /// <summary>Android only. The SDK's estimate of how capable the device is.</summary>
+    [Serializable]
+    public enum DeviceTier
+    {
+        UltraLow,
+        Low,
+        Mid,
+        High,
+        UltraHigh,
+        Unknown
     }
 }

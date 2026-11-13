@@ -49,16 +49,102 @@ namespace Superwall
         public string PresentationId;
         /// <summary>iOS only. Whether the paywall was loaded from files bundled with the app.</summary>
         public bool? IsLocal;
+        /// <summary>How the paywall is presented: its style, the delay before it shows, and the size of a drawer or popup.</summary>
+        public PaywallPresentationInfo Presentation;
+        /// <summary>iOS only. Whether the paywall treats the user as eligible for introductory offers.</summary>
+        public IntroOfferEligibility? IntroOfferEligibility;
+        /// <summary>Android only. The paywall's ID in Superwall's database.</summary>
+        public string DatabaseId;
+        /// <summary>Android only. The customer info the paywall was presented with.</summary>
+        public CustomerInfo CustomerInfo;
+    }
+
+    /// <summary>How a paywall is presented.</summary>
+    [Serializable]
+    public class PaywallPresentationInfo
+    {
+        public PaywallPresentationStyle Style;
+        /// <summary>The delay before the paywall is presented, in milliseconds.</summary>
+        public long Delay;
+        /// <summary>The height of a <see cref="PaywallPresentationStyle.Drawer"/> or <see cref="PaywallPresentationStyle.Popup"/>, as a percentage of the screen. Null for the other styles.</summary>
+        public double? Height;
+        /// <summary>The width of a <see cref="PaywallPresentationStyle.Popup"/>, as a percentage of the screen. Null for the other styles.</summary>
+        public double? Width;
+        /// <summary>The corner radius of a <see cref="PaywallPresentationStyle.Drawer"/> or <see cref="PaywallPresentationStyle.Popup"/>. Null for the other styles.</summary>
+        public double? CornerRadius;
     }
 
     [Serializable]
     public class Product
     {
+        /// <summary>
+        /// The product's identifier. On Android this is the composite identifier, which includes the base plan and
+        /// offer (<c>product:basePlan:offer</c>); on iOS it is the bare product identifier. Use
+        /// <see cref="ProductIdentifier"/> for the bare identifier on both.
+        /// </summary>
         public string Id;
+        /// <summary>The product's identifier in its store, without base plan or offer, on both platforms.</summary>
+        public string ProductIdentifier;
         public string Name;
         public List<Entitlement> Entitlements;
         /// <summary>The store the product is sold through.</summary>
         public ProductStore? Store;
+        /// <summary>The product's details when <see cref="Store"/> is <see cref="ProductStore.AppStore"/>. Null otherwise.</summary>
+        public AppStoreProduct AppStoreProduct;
+        /// <summary>The product's details when <see cref="Store"/> is <see cref="ProductStore.Stripe"/>. Null otherwise.</summary>
+        public StripeProduct StripeProduct;
+        /// <summary>The product's details when <see cref="Store"/> is <see cref="ProductStore.Paddle"/>. Null otherwise.</summary>
+        public PaddleProduct PaddleProduct;
+        /// <summary>Android only. The product's details when <see cref="Store"/> is <see cref="ProductStore.PlayStore"/>. Null otherwise.</summary>
+        public PlayStoreProduct PlayStoreProduct;
+        /// <summary>The product's details when <see cref="Store"/> is <see cref="ProductStore.Custom"/>. Null otherwise.</summary>
+        public CustomStoreProduct CustomProduct;
+    }
+
+    [Serializable]
+    public class AppStoreProduct
+    {
+        public string Id;
+        /// <summary>iOS only. The billing plan set for the product on the dashboard, if any.</summary>
+        public BillingPlanType? BillingPlanType;
+    }
+
+    [Serializable]
+    public class StripeProduct
+    {
+        public string Id;
+        public int? TrialDays;
+        /// <summary>Android only. The Stripe environment, such as <c>live</c> or <c>sandbox</c>.</summary>
+        public string Environment;
+    }
+
+    [Serializable]
+    public class PaddleProduct
+    {
+        public string Id;
+        /// <summary>Android only.</summary>
+        public int? TrialDays;
+        /// <summary>Android only. The Paddle environment, such as <c>live</c> or <c>sandbox</c>.</summary>
+        public string Environment;
+    }
+
+    /// <summary>Android only. A Google Play product, with the base plan and offer the paywall uses.</summary>
+    [Serializable]
+    public class PlayStoreProduct
+    {
+        public string Id;
+        public string BasePlanIdentifier;
+        public PlayStoreOfferType OfferType;
+        /// <summary>The offer, when <see cref="OfferType"/> is <see cref="PlayStoreOfferType.Specified"/>.</summary>
+        public string OfferIdentifier;
+        /// <summary>The identifier with base plan and offer: <c>product:basePlan:offer</c>.</summary>
+        public string FullIdentifier;
+    }
+
+    [Serializable]
+    public class CustomStoreProduct
+    {
+        public string Id;
     }
 
     [Serializable]

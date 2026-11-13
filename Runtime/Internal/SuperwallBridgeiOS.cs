@@ -187,6 +187,18 @@ namespace Superwall.Internal
 
         [DllImport("__Internal")]
         internal static extern void _SuperwallBridge_RespondToCustomerCenterShouldRestore(string callbackId, bool proceed);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_DismissWithCompletion(string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern string _SuperwallBridge_GetGrantedEntitlements();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetGrantedEntitlements(string entitlementsJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetGameControllerForwardingEnabled(bool enabled);
     }
 #endif
 }
