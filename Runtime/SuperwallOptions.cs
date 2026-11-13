@@ -108,10 +108,12 @@ namespace Superwall
         /// </summary>
         public string LoadingColorResourceName;
         /// <summary>
-        /// Android only. Called when the user presses back while a paywall is shown. While this is set the press
-        /// doesn't dismiss the paywall: call <c>Superwall.Shared.Dismiss()</c> from here to close it. The paywall's
-        /// info is null if it isn't known yet. With <see cref="AndroidPaywallPresentation.Activity"/> Unity is
-        /// paused while the paywall is up, so the press keeps its default behaviour and this runs once Unity resumes.
+        /// Android only. Called when the user presses back on a paywall that has "Reroute back button" turned on in
+        /// its settings on the dashboard; the SDK doesn't ask for other paywalls. While this is set the press
+        /// doesn't dismiss such a paywall: call <c>Superwall.Shared.Dismiss()</c> from here to close it. The
+        /// paywall's info is null if it isn't known yet. With <see cref="AndroidPaywallPresentation.Activity"/>
+        /// Unity is paused while the paywall is up, so the press keeps its default behaviour and this runs once
+        /// Unity resumes.
         /// </summary>
         public Action<PaywallInfo> OnBackPressed;
     }
