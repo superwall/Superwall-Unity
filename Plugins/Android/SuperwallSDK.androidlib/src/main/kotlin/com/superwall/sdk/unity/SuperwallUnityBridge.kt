@@ -149,6 +149,34 @@ internal class UnityCustomCallbacks(private val sendToUnity: (String, JSONObject
     }
 }
 
+/**
+ * The Customer Center presentation made through this bridge that is still open, if any. The SDK presents one at a
+ * time and, asked for another, only logs: it never calls that one's onDismiss, so C# would keep its delegate and
+ * never run its onDismiss. A second `presentCustomerCenter` can arrive before the first activity pauses Unity, from
+ * a double tap. Only touched on the main thread.
+ *
+ * A Customer Center the app presents natively, outside this bridge, isn't seen here: one asked for through the bridge
+ * meanwhile is refused by the SDK and would stay marked presented. [clear] runs whenever a dismissal finishes, when
+ * nothing is on screen, and hands back such a presentation so its onDismiss can still run.
+ */
+internal class UnityCustomerCenterPresentations {
+    private var presentedId: String? = null
+
+    /** Whether [presentationId] can be presented, marking it presented if so. */
+    fun begin(presentationId: String): Boolean {
+        if (presentedId != null) return false
+        presentedId = presentationId
+        return true
+    }
+
+    fun end(presentationId: String) {
+        if (presentedId == presentationId) presentedId = null
+    }
+
+    /** Forgets the presentation marked presented, returning it. A presentation that did open has ended by now. */
+    fun clear(): String? = presentedId.also { presentedId = null }
+}
+
 @Suppress("unused")
 class SuperwallUnityBridge {
 
@@ -157,6 +185,7 @@ class SuperwallUnityBridge {
         private var unityPurchaseController: UnityPurchaseController? = null
         private var latestIntegrationAttributes: Map<AttributionProvider, String>? = null
         private val customCallbacks = UnityCustomCallbacks { method, data -> sendToUnity(method, data) }
+        private val customerCenters = UnityCustomerCenterPresentations()
         private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
         private const val TAG = "SuperwallUnity"
@@ -806,13 +835,23 @@ class SuperwallUnityBridge {
                 onDismiss()
                 return@launch
             }
+            if (!customerCenters.begin(presentationId)) {
+                onDismiss()
+                return@launch
+            }
             val delegate = if (hasDelegate) UnityCustomerCenterDelegate(presentationId) else null
-            Superwall.instance.presentCustomerCenter(configuration, delegate, onDismiss)
+            Superwall.instance.presentCustomerCenter(configuration, delegate) {
+                customerCenters.end(presentationId)
+                onDismiss()
+            }
         }
     }
 
     fun dismissCustomerCenter(callbackId: String?) {
-        val completion: () -> Unit = { callbackId?.let { sendAsyncResponse(it, JSONObject()) } }
+        val completion: () -> Unit = {
+            customerCenters.clear()?.let { sendToUnity("customerCenterOnDismiss", JSONObject().put("presentationId", it)) }
+            callbackId?.let { sendAsyncResponse(it, JSONObject()) }
+        }
         scope.launch {
             if (!Superwall.initialized) {
                 completion()

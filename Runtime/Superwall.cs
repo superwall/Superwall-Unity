@@ -491,7 +491,8 @@ namespace Superwall
 
         /// <summary>
         /// Presents the Customer Center, where users view and manage their subscriptions, request refunds, restore
-        /// purchases and contact support. Does nothing while one is already presented.
+        /// purchases and contact support. Only one can be presented at a time: while one is, this presents nothing
+        /// and calls <paramref name="onDismiss"/> straight away.
         /// </summary>
         /// <param name="configuration">Null uses <see cref="SuperwallOptions.CustomerCenter"/>.</param>
         /// <param name="customerCenterDelegate">Receives this presentation's events. Kept until it's dismissed.</param>

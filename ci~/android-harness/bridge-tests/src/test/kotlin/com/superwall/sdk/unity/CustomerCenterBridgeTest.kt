@@ -11,6 +11,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Date
 
@@ -110,5 +111,30 @@ class CustomerCenterBridgeTest {
         assertEquals("GPA.1", json.getJSONObject("subscription").getString("transactionId"))
         assertEquals(1761739200000L, json.getJSONObject("subscription").getLong("purchaseDate"))
         assertFalse(json.has("nonSubscription"))
+    }
+
+    @Test
+    fun presentations_refuseASecondWhileOneIsOpen() {
+        val presentations = UnityCustomerCenterPresentations()
+        assertTrue(presentations.begin("first"))
+        // The SDK would refuse this one without calling its onDismiss, so the bridge calls it.
+        assertFalse(presentations.begin("second"))
+        // Ending a presentation that never opened leaves the open one alone.
+        presentations.end("second")
+        assertFalse(presentations.begin("third"))
+        presentations.end("first")
+        assertTrue(presentations.begin("fourth"))
+    }
+
+    @Test
+    fun presentations_clearHandsBackOneThatNeverEnded() {
+        val presentations = UnityCustomerCenterPresentations()
+        assertNull(presentations.clear())
+        presentations.begin("refused")
+        // A dismissal finished while it was still marked presented: the SDK refused it, so it never ended.
+        assertEquals("refused", presentations.clear())
+        assertTrue(presentations.begin("next"))
+        presentations.end("next")
+        assertNull(presentations.clear())
     }
 }
