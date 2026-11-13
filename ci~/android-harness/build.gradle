@@ -44,6 +44,9 @@ project(':SuperwallSDK') {
             testImplementation 'junit:junit:4.13.2'
             testImplementation 'org.json:json:20240303'
             testImplementation 'org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0'
+            // Tests build superwall-android models that hold JsonElement maps; see the
+            // androidlib's compileOnly line for why AGP 9 needs this named.
+            testImplementation 'org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.2'
         }
     }
 }
