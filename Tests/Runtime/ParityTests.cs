@@ -574,6 +574,127 @@ namespace Superwall.Tests
             Assert.IsNull(calls[1]);
         }
 
+        // --- Embedded paywall ---
+
+        [Test]
+        public void EmbeddedPaywallRect_BecomesFractionsOfTheScreen_MeasuredFromTheTop()
+        {
+            // The bottom third of a 1080 x 1920 screen, inset 40 pixels at the sides. Unity measures y from the bottom.
+            var normalized = EmbeddedPaywall.Normalize(new UnityEngine.Rect(40, 0, 1000, 640), 1080, 1920);
+            Assert.AreEqual(40f / 1080f, normalized[0], 0.0001f);
+            Assert.AreEqual(1f - 640f / 1920f, normalized[1], 0.0001f);
+            Assert.AreEqual(1000f / 1080f, normalized[2], 0.0001f);
+            Assert.AreEqual(640f / 1920f, normalized[3], 0.0001f);
+
+            // The whole screen.
+            CollectionAssert.AreEqual(new[] { 0f, 0f, 1f, 1f }, EmbeddedPaywall.Normalize(new UnityEngine.Rect(0, 0, 1080, 1920), 1080, 1920));
+            // A screen with no size yet can't be divided by.
+            CollectionAssert.AreEqual(new[] { 0f, 0f, 1f, 1f }, EmbeddedPaywall.Normalize(new UnityEngine.Rect(0, 0, 10, 10), 0, 0));
+        }
+
+        [Test]
+        public void EmbeddedPaywall_HearsItsEvents_AndIsLetGoWhenItShouldDismiss()
+        {
+            var handler = BridgeCallbackHandler.Instance;
+            var before = handler.EmbeddedPaywallCount;
+            var handlersBefore = handler.PresentationHandlerCount;
+            PaywallInfo presented = null;
+            var finished = new List<(PaywallResult result, bool shouldDismiss)>();
+            var paywall = new EmbeddedPaywall("view-1", "campaign");
+            handler.RegisterEmbeddedPaywall("view-1", paywall, new EmbeddedPaywallHandler
+            {
+                OnPresent = info => presented = info,
+                OnFinished = (info, result, shouldDismiss) => finished.Add((result, shouldDismiss)),
+                OnCustomCallback = callback => System.Threading.Tasks.Task.FromResult(CustomCallbackResult.Success()),
+            });
+            Assert.AreEqual(handlersBefore + 1, handler.PresentationHandlerCount, "custom callbacks arrive addressed to the view");
+
+            var info = new Dictionary<string, object> { { "identifier", "pw" } };
+            Send("embeddedPaywallOnPresent", new Dictionary<string, object> { { "viewId", "view-1" }, { "paywallInfo", info } });
+            Assert.AreEqual("pw", presented.Identifier);
+
+            // A purchase on a paywall that isn't set to dismiss: it stays up.
+            Send("embeddedPaywallOnFinished", new Dictionary<string, object>
+            {
+                { "viewId", "view-1" }, { "paywallInfo", info }, { "shouldDismiss", false },
+                { "result", new Dictionary<string, object> { { "type", "purchased" }, { "productId", "pro" } } },
+            });
+            Assert.IsFalse(paywall.IsRemoved);
+            Assert.AreEqual(before + 1, handler.EmbeddedPaywallCount);
+
+            Send("embeddedPaywallOnFinished", new Dictionary<string, object>
+            {
+                { "viewId", "view-1" }, { "paywallInfo", info }, { "shouldDismiss", true },
+                { "result", new Dictionary<string, object> { { "type", "declined" } } },
+            });
+            Assert.AreEqual(2, finished.Count);
+            Assert.AreEqual(PaywallResult.ResultType.Purchased, finished[0].result.Type);
+            Assert.IsFalse(finished[0].shouldDismiss);
+            Assert.IsTrue(finished[1].shouldDismiss);
+            Assert.IsTrue(paywall.IsRemoved);
+            Assert.AreEqual(before, handler.EmbeddedPaywallCount);
+            Assert.AreEqual(handlersBefore, handler.PresentationHandlerCount);
+
+            // Removing it again, or events that arrive late, do nothing.
+            paywall.Remove();
+            Send("embeddedPaywallOnPresent", new Dictionary<string, object> { { "viewId", "view-1" }, { "paywallInfo", info } });
+        }
+
+        [Test]
+        public void EmbeddedPaywall_ThatIsSkippedOrFails_IsLetGo()
+        {
+            var handler = BridgeCallbackHandler.Instance;
+            var before = handler.EmbeddedPaywallCount;
+            PaywallSkippedReason? reason = null;
+            Experiment experiment = null;
+            string error = null;
+            var skipped = new EmbeddedPaywall("view-skip", "campaign");
+            var failed = new EmbeddedPaywall("view-fail", "campaign");
+            handler.RegisterEmbeddedPaywall("view-skip", skipped, new EmbeddedPaywallHandler { OnSkip = (r, e) => { reason = r; experiment = e; } });
+            handler.RegisterEmbeddedPaywall("view-fail", failed, new EmbeddedPaywallHandler { OnError = e => error = e });
+
+            Send("embeddedPaywallOnSkip", new Dictionary<string, object> { { "viewId", "view-skip" }, { "reason", "holdout" }, { "experiment", Experiment() } });
+            Send("embeddedPaywallOnError", new Dictionary<string, object> { { "viewId", "view-fail" }, { "error", "No internet" } });
+
+            Assert.AreEqual(PaywallSkippedReason.Holdout, reason);
+            Assert.AreEqual("exp", experiment.Id);
+            Assert.AreEqual("No internet", error);
+            Assert.IsTrue(skipped.IsRemoved);
+            Assert.IsTrue(failed.IsRemoved);
+            Assert.AreEqual(before, handler.EmbeddedPaywallCount);
+        }
+
+        [Test]
+        public void EmbeddedPaywall_Removed_HearsNothingMore()
+        {
+            var handler = BridgeCallbackHandler.Instance;
+            var before = handler.EmbeddedPaywallCount;
+            var paywall = new EmbeddedPaywall("view-removed", "campaign");
+            handler.RegisterEmbeddedPaywall("view-removed", paywall, new EmbeddedPaywallHandler
+            {
+                OnPresent = info => Assert.Fail("removed before it was presented"),
+            });
+            paywall.Remove();
+            Assert.IsTrue(paywall.IsRemoved);
+            Assert.AreEqual(before, handler.EmbeddedPaywallCount);
+            Send("embeddedPaywallOnPresent", new Dictionary<string, object> { { "viewId", "view-removed" }, { "paywallInfo", new Dictionary<string, object>() } });
+        }
+
+        [Test]
+        public void EmbeddedPaywall_WithoutANativeSdk_ReportsAnError()
+        {
+            var superwall = UnconfiguredInstance();
+            string error = null;
+            var paywall = superwall.ShowEmbeddedPaywall("campaign", new UnityEngine.Rect(0, 0, 1080, 600), null, new EmbeddedPaywallHandler { OnError = e => error = e });
+            Assert.AreEqual("campaign", paywall.Placement);
+            Assert.IsFalse(paywall.IsRemoved);
+
+            BridgeCallbackHandler.Instance.RunSimulatedCallbacks();
+
+            Assert.AreEqual(global::Superwall.Superwall.NoNativeSdkMessage, error);
+            Assert.IsTrue(paywall.IsRemoved);
+        }
+
         // --- No native SDK (the Editor) ---
 
         [Test]

@@ -904,6 +904,35 @@ namespace Superwall
             CallNative_Consume(purchaseToken, callbackId);
         }
 
+        // ------- Embedded Paywall -------
+
+        /// <summary>
+        /// Shows the paywall of a placement inside part of the game's screen, instead of presenting it over the
+        /// whole screen as <see cref="RegisterPlacement"/> does. The paywall is a native view laid over Unity's, so
+        /// it is drawn above everything Unity renders. Whether a paywall is shown follows the placement's audiences,
+        /// as with <see cref="RegisterPlacement"/>; the presentation style set on the dashboard doesn't apply.
+        /// Keep the returned object to move the paywall with <see cref="EmbeddedPaywall.SetRect"/> and take it away
+        /// with <see cref="EmbeddedPaywall.Remove"/>. Show each placement in one embedded paywall at a time.
+        /// </summary>
+        /// <param name="placement">The placement whose paywall to show.</param>
+        /// <param name="screenRect">
+        /// Where to show it, in Unity's screen space: pixels, with the origin at the bottom left. For a UI element,
+        /// take its corners from <c>RectTransform.GetWorldCorners</c> and convert them with
+        /// <c>RectTransformUtility.WorldToScreenPoint</c>.
+        /// </param>
+        /// <param name="parameters">Parameters for the placement's audience filters and the paywall.</param>
+        /// <param name="handler">Hears whether the paywall was shown, skipped or failed, and when the user is done with it.</param>
+        public EmbeddedPaywall ShowEmbeddedPaywall(string placement, Rect screenRect, Dictionary<string, object> parameters = null, EmbeddedPaywallHandler handler = null)
+        {
+            string viewId = Guid.NewGuid().ToString();
+            var embedded = new EmbeddedPaywall(viewId, placement);
+            BridgeCallbackHandler.Instance.RegisterEmbeddedPaywall(viewId, embedded, handler);
+            var normalized = EmbeddedPaywall.Normalize(screenRect, Screen.width, Screen.height);
+            CallNative_ShowEmbeddedPaywall(viewId, placement, parameters != null ? Json.Serialize(parameters) : null,
+                normalized[0], normalized[1], normalized[2], normalized[3]);
+            return embedded;
+        }
+
         // ------- Web Restore (Android) -------
 
         /// <summary>
@@ -2123,6 +2152,36 @@ namespace Superwall
             var data = new Dictionary<string, object>();
             foreach (var (key, value) in fields) data[key] = value;
             BridgeCallbackHandler.Instance?.EnqueueSimulatedCallback(method, data);
+        }
+
+        private static void CallNative_ShowEmbeddedPaywall(string viewId, string placement, string paramsJson, float x, float y, float width, float height)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_ShowEmbeddedPaywall(viewId, placement, paramsJson, x, y, width, height);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.ShowEmbeddedPaywall(viewId, placement, paramsJson, x, y, width, height);
+#else
+            Debug.Log($"[Superwall] ShowEmbeddedPaywall({placement})");
+            SimulateWithoutNative("embeddedPaywallOnError", ("viewId", viewId), ("error", NoNativeSdkMessage));
+#endif
+        }
+
+        internal static void CallNative_SetEmbeddedPaywallRect(string viewId, float x, float y, float width, float height)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_SetEmbeddedPaywallRect(viewId, x, y, width, height);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.SetEmbeddedPaywallRect(viewId, x, y, width, height);
+#endif
+        }
+
+        internal static void CallNative_RemoveEmbeddedPaywall(string viewId)
+        {
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_RemoveEmbeddedPaywall(viewId);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.RemoveEmbeddedPaywall(viewId);
+#endif
         }
 
         private static void CallNative_DismissWithCompletion(string callbackId)

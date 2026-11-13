@@ -112,7 +112,66 @@ namespace Superwall.Internal
             _featureHandlers.Clear();
             _pendingAsyncCallbacks.Clear();
             _customerCenters.Clear();
+            _embeddedPaywalls.Clear();
             _simulatedCallbacks.Clear();
+        }
+
+        // Each embedded paywall and its handler, until it is removed, finishes for good or fails.
+        private readonly Dictionary<string, (EmbeddedPaywall paywall, EmbeddedPaywallHandler handler)> _embeddedPaywalls =
+            new Dictionary<string, (EmbeddedPaywall, EmbeddedPaywallHandler)>();
+
+        internal int EmbeddedPaywallCount => _embeddedPaywalls.Count;
+
+        internal void RegisterEmbeddedPaywall(string viewId, EmbeddedPaywall paywall, EmbeddedPaywallHandler handler)
+        {
+            _embeddedPaywalls[viewId] = (paywall, handler);
+            // Native sends an embedded paywall's custom callbacks like any other's, with the view as the handler.
+            if (handler?.OnCustomCallback != null)
+                _presentationHandlers[viewId] = new PaywallPresentationHandler { OnCustomCallback = handler.OnCustomCallback };
+        }
+
+        internal void UnregisterEmbeddedPaywall(string viewId)
+        {
+            _embeddedPaywalls.Remove(viewId);
+            _presentationHandlers.Remove(viewId);
+        }
+
+        private void HandleEmbeddedPaywall(string method, Dictionary<string, object> data)
+        {
+            var viewId = GetString(data, "viewId");
+            if (viewId == null || !_embeddedPaywalls.TryGetValue(viewId, out var entry)) return;
+            var handler = entry.handler;
+            switch (method)
+            {
+                case "embeddedPaywallOnPresent":
+                    handler?.OnPresent?.Invoke(DeserializePaywallInfo(GetDict(data, "paywallInfo")));
+                    break;
+                case "embeddedPaywallOnSkip":
+                    // Nothing was put on screen, and nothing will be: native only has its record of the view to drop.
+                    entry.paywall.IsRemoved = true;
+                    UnregisterEmbeddedPaywall(viewId);
+                    Superwall.CallNative_RemoveEmbeddedPaywall(viewId);
+                    handler?.OnSkip?.Invoke(DeserializePaywallSkippedReason(GetString(data, "reason")), DeserializeExperiment(GetDict(data, "experiment")));
+                    break;
+                case "embeddedPaywallOnError":
+                    entry.paywall.IsRemoved = true;
+                    UnregisterEmbeddedPaywall(viewId);
+                    // Let native drop what it holds for the view: after a failed load that is only its record of it.
+                    Superwall.CallNative_RemoveEmbeddedPaywall(viewId);
+                    handler?.OnError?.Invoke(GetString(data, "error"));
+                    break;
+                case "embeddedPaywallOnFinished":
+                    var shouldDismiss = GetBool(data, "shouldDismiss");
+                    if (shouldDismiss)
+                    {
+                        // Native has taken the view off the screen already.
+                        entry.paywall.IsRemoved = true;
+                        UnregisterEmbeddedPaywall(viewId);
+                    }
+                    handler?.OnFinished?.Invoke(DeserializePaywallInfo(GetDict(data, "paywallInfo")),
+                        DeserializePaywallResult(GetDict(data, "result")), shouldDismiss);
+                    break;
+            }
         }
 
         internal void RemoveAsyncCallback(string callbackId)
@@ -252,6 +311,14 @@ namespace Superwall.Internal
                     break;
                 case "releasePresentationHandler":
                     UnregisterPresentationHandler(GetString(data, "handlerId") ?? "");
+                    break;
+
+                // --- Embedded paywall ---
+                case "embeddedPaywallOnPresent":
+                case "embeddedPaywallOnSkip":
+                case "embeddedPaywallOnError":
+                case "embeddedPaywallOnFinished":
+                    HandleEmbeddedPaywall(method, data);
                     break;
 
                 // --- Paywall options ---

@@ -192,6 +192,15 @@ namespace Superwall.Internal
         internal static extern void _SuperwallBridge_DismissWithCompletion(string callbackId);
 
         [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_ShowEmbeddedPaywall(string viewId, string placement, string paramsJson, float x, float y, float width, float height);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetEmbeddedPaywallRect(string viewId, float x, float y, float width, float height);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_RemoveEmbeddedPaywall(string viewId);
+
+        [DllImport("__Internal")]
         internal static extern string _SuperwallBridge_GetGrantedEntitlements();
 
         [DllImport("__Internal")]

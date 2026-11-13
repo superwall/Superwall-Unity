@@ -58,6 +58,25 @@ namespace UnityEngine
     }
 #endif
 
+    public struct Rect
+    {
+        public float x, y, width, height;
+
+        public Rect(float x, float y, float width, float height)
+        {
+            this.x = x;
+            this.y = y;
+            this.width = width;
+            this.height = height;
+        }
+    }
+
+    public static class Screen
+    {
+        public static int width = 1080;
+        public static int height = 1920;
+    }
+
     public static class Application
     {
         public delegate void LogCallback(string condition, string stackTrace, LogType type);

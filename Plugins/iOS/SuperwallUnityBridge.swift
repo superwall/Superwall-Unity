@@ -2510,3 +2510,222 @@ public func _SuperwallBridge_SetGameControllerForwardingEnabled(_ enabled: Bool)
         }
     }
 }
+
+// MARK: - Embedded Paywall
+
+/// Covers the game's view and lays the paywall out in the part of it C# asked for. The rectangle is in fractions of
+/// this view's size, because Unity's pixels needn't match UIKit's points, so it stays right through rotation.
+/// Touches outside the paywall go through to the game.
+private final class UnityEmbeddedPaywallContainer: UIView {
+    var normalizedRect: CGRect = .zero {
+        didSet { setNeedsLayout() }
+    }
+
+    weak var paywallView: UIView?
+
+    private var paywallFrame: CGRect {
+        return CGRect(
+            x: normalizedRect.minX * bounds.width,
+            y: normalizedRect.minY * bounds.height,
+            width: normalizedRect.width * bounds.width,
+            height: normalizedRect.height * bounds.height
+        )
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        paywallView?.frame = paywallFrame
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        return paywallFrame.contains(point)
+    }
+}
+
+/// One paywall shown inside the game's view, retrieved with SuperwallKit's `getPaywall`. It owns at most one
+/// PaywallViewController, as a child of the window's root view controller, and lets go of it when removed: a
+/// paywall view controller must never be shown in two places.
+@MainActor
+private final class UnityEmbeddedPaywall: PaywallViewControllerDelegate {
+    private let viewId: String
+    private let container = UnityEmbeddedPaywallContainer()
+    private var paywallViewController: PaywallViewController?
+    private var loadTask: Task<Void, Never>?
+    private var isRemoved = false
+
+    init(viewId: String, normalizedRect: CGRect) {
+        self.viewId = viewId
+        container.normalizedRect = normalizedRect
+        container.clipsToBounds = true
+        container.backgroundColor = .clear
+    }
+
+    func setNormalizedRect(_ rect: CGRect) {
+        container.normalizedRect = rect
+    }
+
+    func load(placement: String, params: [String: Any]?) {
+        let viewId = self.viewId
+        loadTask = Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            do {
+                let paywall = try await Superwall.shared.getPaywall(
+                    forPlacement: placement,
+                    params: params,
+                    delegate: self,
+                    onCustomCallback: { callback in
+                        return await unityCustomCallbacks.request(handlerId: viewId, callback: callback)
+                    }
+                )
+                guard !Task.isCancelled, !self.isRemoved else { return }
+                guard paywall.parent == nil,
+                      paywall.presentingViewController == nil,
+                      paywall.viewIfLoaded?.superview == nil else {
+                    self.reportError("The paywall is already shown elsewhere. Use a different placement for each embedded paywall.")
+                    return
+                }
+                guard self.attach(paywall) else {
+                    self.reportError("There is no view controller to show the embedded paywall in.")
+                    return
+                }
+                sendToUnity(method: "embeddedPaywallOnPresent", data: [
+                    "viewId": viewId,
+                    "paywallInfo": serializePaywallInfo(paywall.info)
+                ])
+            } catch let reason as PaywallSkippedReason {
+                guard !Task.isCancelled, !self.isRemoved else { return }
+                var data: [String: Any] = ["viewId": viewId]
+                switch reason {
+                case .holdout(let experiment):
+                    data["reason"] = "holdout"
+                    data["experiment"] = serializeExperiment(experiment)
+                case .noAudienceMatch: data["reason"] = "noAudienceMatch"
+                case .placementNotFound: data["reason"] = "placementNotFound"
+                @unknown default: data["reason"] = "noAudienceMatch"
+                }
+                sendToUnity(method: "embeddedPaywallOnSkip", data: data)
+            } catch is CancellationError {
+                // Removed while loading.
+            } catch {
+                guard !Task.isCancelled, !self.isRemoved else { return }
+                self.reportError(error.localizedDescription)
+            }
+        }
+    }
+
+    func remove() {
+        isRemoved = true
+        loadTask?.cancel()
+        loadTask = nil
+        detach()
+    }
+
+    private func reportError(_ message: String) {
+        sendToUnity(method: "embeddedPaywallOnError", data: ["viewId": viewId, "error": message])
+    }
+
+    private func attach(_ paywall: PaywallViewController) -> Bool {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+        let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first
+        guard let parent = window?.rootViewController, let parentView = parent.view else { return false }
+
+        container.frame = parentView.bounds
+        container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        parentView.addSubview(container)
+
+        parent.addChild(paywall)
+        let paywallView: UIView = paywall.view
+        paywallView.translatesAutoresizingMaskIntoConstraints = true
+        paywallView.autoresizingMask = []
+        container.addSubview(paywallView)
+        container.paywallView = paywallView
+        container.setNeedsLayout()
+        paywall.didMove(toParent: parent)
+        paywallViewController = paywall
+        return true
+    }
+
+    private func detach() {
+        if let paywall = paywallViewController {
+            paywall.willMove(toParent: nil)
+            paywall.view.removeFromSuperview()
+            paywall.removeFromParent()
+        }
+        paywallViewController = nil
+        container.removeFromSuperview()
+    }
+
+    // MARK: PaywallViewControllerDelegate
+
+    func paywall(_ paywall: PaywallViewController, didFinishWith result: PaywallResult, shouldDismiss: Bool) {
+        // A paywall this view has let go of may still report to it.
+        guard paywall === paywallViewController else { return }
+        let info = serializePaywallInfo(paywall.info)
+        if shouldDismiss {
+            unityEmbeddedPaywalls[viewId] = nil
+            remove()
+        }
+        sendToUnity(method: "embeddedPaywallOnFinished", data: [
+            "viewId": viewId,
+            "paywallInfo": info,
+            "result": serializePaywallResult(result),
+            "shouldDismiss": shouldDismiss
+        ])
+    }
+}
+
+@MainActor private var unityEmbeddedPaywalls: [String: UnityEmbeddedPaywall] = [:]
+
+// x, y, width and height are fractions of the screen, with y measured from the top.
+@_cdecl("_SuperwallBridge_ShowEmbeddedPaywall")
+public func _SuperwallBridge_ShowEmbeddedPaywall(
+    _ viewId: UnsafePointer<CChar>,
+    _ placement: UnsafePointer<CChar>,
+    _ paramsJson: UnsafePointer<CChar>?,
+    _ x: Float,
+    _ y: Float,
+    _ width: Float,
+    _ height: Float
+) {
+    let id = String(cString: viewId)
+    let placementName = String(cString: placement)
+    let params = toSwiftString(paramsJson).flatMap { parseJson($0) }
+    let rect = CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(width), height: CGFloat(height))
+    Task { @MainActor in
+        guard Superwall.isInitialized else {
+            sendToUnity(method: "embeddedPaywallOnError", data: [
+                "viewId": id,
+                "error": "Superwall must be configured before an embedded paywall is shown."
+            ])
+            return
+        }
+        let embedded = UnityEmbeddedPaywall(viewId: id, normalizedRect: rect)
+        unityEmbeddedPaywalls[id] = embedded
+        embedded.load(placement: placementName, params: params)
+    }
+}
+
+@_cdecl("_SuperwallBridge_SetEmbeddedPaywallRect")
+public func _SuperwallBridge_SetEmbeddedPaywallRect(
+    _ viewId: UnsafePointer<CChar>,
+    _ x: Float,
+    _ y: Float,
+    _ width: Float,
+    _ height: Float
+) {
+    let id = String(cString: viewId)
+    let rect = CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(width), height: CGFloat(height))
+    Task { @MainActor in
+        unityEmbeddedPaywalls[id]?.setNormalizedRect(rect)
+    }
+}
+
+@_cdecl("_SuperwallBridge_RemoveEmbeddedPaywall")
+public func _SuperwallBridge_RemoveEmbeddedPaywall(_ viewId: UnsafePointer<CChar>) {
+    let id = String(cString: viewId)
+    Task { @MainActor in
+        unityEmbeddedPaywalls.removeValue(forKey: id)?.remove()
+    }
+}

@@ -58,6 +58,12 @@ import com.superwall.sdk.store.abstractions.product.SubscriptionPeriod
 import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.Purchase
+import android.view.View
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import com.superwall.sdk.paywall.presentation.get_paywall.builder.PaywallBuilder
+import com.superwall.sdk.paywall.view.PaywallView
+import com.superwall.sdk.paywall.view.delegate.PaywallViewCallback
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.superwall.sdk.paywall.presentation.get_presentation_result.getPresentationResult
@@ -501,16 +507,7 @@ class SuperwallUnityBridge {
                 sendToUnity("onDismiss", JSONObject().apply {
                     put("handlerId", handlerId)
                     put("paywallInfo", serializePaywallInfo(info))
-                    put("result", JSONObject().apply {
-                        when (result) {
-                            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Purchased -> {
-                                put("type", "purchased")
-                                put("productId", result.productId)
-                            }
-                            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Declined -> put("type", "declined")
-                            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Restored -> put("type", "restored")
-                        }
-                    })
+                    put("result", serializePaywallResult(result))
                 })
             }
             handler.onError { error ->
@@ -520,13 +517,7 @@ class SuperwallUnityBridge {
                 })
             }
             handler.onSkip { reason ->
-                val reasonStr = when (reason) {
-                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.Holdout -> "holdout"
-                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.NoAudienceMatch -> "noAudienceMatch"
-                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.PlacementNotFound -> "placementNotFound"
-                    is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.UserIsSubscribed -> "userIsSubscribed"
-                    else -> "noAudienceMatch"
-                }
+                val reasonStr = skippedReasonName(reason)
                 sendToUnity("onSkip", JSONObject().apply {
                     put("handlerId", handlerId)
                     put("reason", reasonStr)
@@ -548,6 +539,25 @@ class SuperwallUnityBridge {
         }
 
         callbackId?.let { sendAsyncResponse(it, JSONObject().put("success", true)) }
+    }
+
+    internal fun serializePaywallResult(result: com.superwall.sdk.paywall.presentation.internal.state.PaywallResult) = JSONObject().apply {
+        when (result) {
+            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Purchased -> {
+                put("type", "purchased")
+                put("productId", result.productId)
+            }
+            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Declined -> put("type", "declined")
+            is com.superwall.sdk.paywall.presentation.internal.state.PaywallResult.Restored -> put("type", "restored")
+        }
+    }
+
+    internal fun skippedReasonName(reason: com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason) = when (reason) {
+        is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.Holdout -> "holdout"
+        is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.NoAudienceMatch -> "noAudienceMatch"
+        is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.PlacementNotFound -> "placementNotFound"
+        is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.UserIsSubscribed -> "userIsSubscribed"
+        else -> "noAudienceMatch"
     }
 
     fun dismiss() { Superwall.instance.dismissSync() }
@@ -657,6 +667,158 @@ class SuperwallUnityBridge {
         Superwall.instance.dispatchMotionEvent(
             android.view.MotionEvent.obtain(now, now, android.view.MotionEvent.ACTION_MOVE, x, y, 0)
         )
+    }
+
+    // --- Embedded paywall ---
+
+    // x, y, width and height are fractions of the activity's content view, with y measured from the top.
+    fun showEmbeddedPaywall(viewId: String, placement: String, paramsJson: String?, x: Float, y: Float, width: Float, height: Float) {
+        val params = paramsJson?.let {
+            try {
+                @Suppress("UNCHECKED_CAST")
+                (jsonToMap(JSONObject(it)).filterValues { value -> value != null } as Map<String, Any>)
+            } catch (_: JSONException) { null }
+        }
+        scope.launch {
+            val activity = UnityPlayer.currentActivity
+            if (!Superwall.initialized || activity == null) {
+                sendToUnity("embeddedPaywallOnError", JSONObject().apply {
+                    put("viewId", viewId)
+                    put("error", "Superwall must be configured, in a running activity, before an embedded paywall is shown.")
+                })
+                return@launch
+            }
+            val embedded = UnityEmbeddedPaywall(viewId, activity, floatArrayOf(x, y, width, height))
+            embeddedPaywalls[viewId] = embedded
+            embedded.load(placement, params)
+        }
+    }
+
+    fun setEmbeddedPaywallRect(viewId: String, x: Float, y: Float, width: Float, height: Float) {
+        scope.launch { embeddedPaywalls[viewId]?.setRect(floatArrayOf(x, y, width, height)) }
+    }
+
+    fun removeEmbeddedPaywall(viewId: String) {
+        scope.launch { embeddedPaywalls.remove(viewId)?.remove() }
+    }
+
+    // Only touched on the main thread.
+    private val embeddedPaywalls = mutableMapOf<String, UnityEmbeddedPaywall>()
+
+    /**
+     * One paywall shown inside the game's activity, built with the SDK's [PaywallBuilder]. Its host is laid over the
+     * activity's content, sized and placed from the rectangle C# gives as fractions of that content, so it stays
+     * right when the content is resized. The SDK caches and shares PaywallView instances, so the paywall is torn
+     * down only when this presentation ends, and that teardown isn't cancelled part-way.
+     */
+    private inner class UnityEmbeddedPaywall(
+        private val viewId: String,
+        private val activity: Activity,
+        private var rect: FloatArray,
+    ) : PaywallViewCallback {
+        private val host = FrameLayout(activity)
+        private var paywallView: PaywallView? = null
+        private var removed = false
+        private var loadJob: Job? = null
+        private val content: View? get() = activity.findViewById(android.R.id.content)
+        private val contentLayoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutHost() }
+
+        fun load(placement: String, params: Map<String, Any>?) {
+            loadJob = scope.launch {
+                val result = PaywallBuilder(placement).params(params).delegate(this@UnityEmbeddedPaywall).activity(activity).build()
+                if (removed) return@launch
+                result.fold(
+                    onSuccess = { show(it) },
+                    onFailure = { error ->
+                        if (error is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason) {
+                            sendToUnity("embeddedPaywallOnSkip", JSONObject().apply {
+                                put("viewId", viewId)
+                                put("reason", skippedReasonName(error))
+                                (error as? com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.Holdout)
+                                    ?.let { put("experiment", serializeExperiment(it.experiment)) }
+                            })
+                        } else {
+                            reportError((error as? PaywallPresentationRequestStatusReason)?.info ?: error.localizedMessage ?: error.toString())
+                        }
+                    },
+                )
+            }
+        }
+
+        fun setRect(newRect: FloatArray) {
+            rect = newRect
+            layoutHost()
+        }
+
+        fun remove() {
+            if (removed) return
+            removed = true
+            loadJob?.cancel()
+            content?.removeOnLayoutChangeListener(contentLayoutListener)
+            (host.parent as? ViewGroup)?.removeView(host)
+            val paywall = paywallView ?: return
+            paywallView = null
+            host.removeView(paywall)
+            paywall.beforeOnDestroy(forceCleanup = true)
+            paywall.encapsulatingActivity = null
+            // On the bridge's scope, which outlives this view: the SDK can hand the same instance out again.
+            scope.launch {
+                paywall.destroyed(forceCleanup = true)
+                paywall.cleanup()
+            }
+        }
+
+        private fun show(paywall: PaywallView) {
+            if (paywall.parent != null) {
+                reportError("The paywall is already shown elsewhere. Use a different placement for each embedded paywall.")
+                return
+            }
+            activity.addContentView(host, FrameLayout.LayoutParams(0, 0))
+            content?.addOnLayoutChangeListener(contentLayoutListener)
+            layoutHost()
+            paywallView = paywall
+            host.addView(paywall, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            paywall.onViewCreated()
+            sendToUnity("embeddedPaywallOnPresent", JSONObject().apply {
+                put("viewId", viewId)
+                put("paywallInfo", serializePaywallInfo(paywall.info))
+            })
+        }
+
+        private fun layoutHost() {
+            val container = content ?: return
+            val params = host.layoutParams as? FrameLayout.LayoutParams ?: return
+            val frame = embeddedPaywallFrame(rect, container.width, container.height)
+            if (params.leftMargin == frame[0] && params.topMargin == frame[1] && params.width == frame[2] && params.height == frame[3]) return
+            params.leftMargin = frame[0]
+            params.topMargin = frame[1]
+            params.width = frame[2]
+            params.height = frame[3]
+            host.layoutParams = params
+        }
+
+        private fun reportError(message: String) {
+            sendToUnity("embeddedPaywallOnError", JSONObject().put("viewId", viewId).put("error", message))
+        }
+
+        override fun onFinished(
+            paywall: PaywallView,
+            result: com.superwall.sdk.paywall.presentation.internal.state.PaywallResult,
+            shouldDismiss: Boolean,
+        ) {
+            if (paywall !== paywallView) return
+            val data = JSONObject().apply {
+                put("viewId", viewId)
+                put("paywallInfo", serializePaywallInfo(paywall.info))
+                put("result", serializePaywallResult(result))
+                put("shouldDismiss", shouldDismiss)
+            }
+            if (shouldDismiss) {
+                embeddedPaywalls.remove(viewId)
+                remove()
+            }
+            sendToUnity("embeddedPaywallOnFinished", data)
+        }
     }
 
     // --- Teardown ---
@@ -2275,6 +2437,20 @@ class SuperwallUnityBridge {
             }
         }
     }
+}
+
+/**
+ * Where an embedded paywall goes: left, top, width and height in pixels, from a rectangle given as fractions of a
+ * container that is [containerWidth] by [containerHeight]. Clamped to the container, so a rectangle that hangs off
+ * the screen is cut rather than laid out with a negative size.
+ */
+internal fun embeddedPaywallFrame(rect: FloatArray, containerWidth: Int, containerHeight: Int): IntArray {
+    fun edge(fraction: Float, size: Int) = (fraction.coerceIn(0f, 1f) * size).toInt()
+    val left = edge(rect[0], containerWidth)
+    val top = edge(rect[1], containerHeight)
+    val right = edge(rect[0] + rect[2], containerWidth)
+    val bottom = edge(rect[1] + rect[3], containerHeight)
+    return intArrayOf(left, top, maxOf(0, right - left), maxOf(0, bottom - top))
 }
 
 /** The `purchaseFromGooglePlay` request BridgeCallbackHandler.HandlePurchaseFromGooglePlay reads. */

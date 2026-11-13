@@ -329,6 +329,21 @@ namespace Superwall.Internal
             Bridge.Call("respondToCustomerCenterShouldRestore", callbackId, proceed);
         }
 
+        internal static void ShowEmbeddedPaywall(string viewId, string placement, string paramsJson, float x, float y, float width, float height)
+        {
+            Bridge.Call("showEmbeddedPaywall", viewId, placement, paramsJson, x, y, width, height);
+        }
+
+        internal static void SetEmbeddedPaywallRect(string viewId, float x, float y, float width, float height)
+        {
+            Bridge.Call("setEmbeddedPaywallRect", viewId, x, y, width, height);
+        }
+
+        internal static void RemoveEmbeddedPaywall(string viewId)
+        {
+            Bridge.Call("removeEmbeddedPaywall", viewId);
+        }
+
         internal static void DismissWithCompletion(string callbackId)
         {
             Bridge.Call("dismissWithCompletion", callbackId);

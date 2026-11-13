@@ -250,6 +250,18 @@ class ParityPayloadTest {
     }
 
     @Test
+    fun embeddedPaywallFrame_isTheFractionOfTheContainer_cutToIt() {
+        // The bottom third of a 1080 x 1920 container, inset at the sides.
+        assertEquals(listOf(40, 1280, 1000, 640), embeddedPaywallFrame(floatArrayOf(40f / 1080f, 2f / 3f, 1000f / 1080f, 1f / 3f), 1080, 1920).toList())
+        assertEquals(listOf(0, 0, 1080, 1920), embeddedPaywallFrame(floatArrayOf(0f, 0f, 1f, 1f), 1080, 1920).toList())
+        // The same share of the container once it has rotated.
+        assertEquals(listOf(0, 540, 1920, 540), embeddedPaywallFrame(floatArrayOf(0f, 0.5f, 1f, 0.5f), 1920, 1080).toList())
+        // Hanging off the edges: cut to the container, never a negative size.
+        assertEquals(listOf(540, 0, 540, 960), embeddedPaywallFrame(floatArrayOf(0.5f, -0.5f, 1f, 1f), 1080, 1920).toList())
+        assertEquals(listOf(1080, 1920, 0, 0), embeddedPaywallFrame(floatArrayOf(2f, 2f, 1f, 1f), 1080, 1920).toList())
+    }
+
+    @Test
     fun observedPurchases_keepOnlyTheOnesBillingCanRead() {
         assertTrue(bridge.parseObservedPurchases("[]").isEmpty())
         assertTrue(bridge.parseObservedPurchases("not json").isEmpty())
