@@ -12,6 +12,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -124,6 +125,26 @@ class BridgeLogicTest {
         assertTrue(lifecycle.owns(shown))
         // The same paywall by value, but another instance: identity is what counts.
         assertFalse(lifecycle.owns(other))
+    }
+
+    @Test
+    fun embeddedPaywall_givenAViewAnotherShows_findsThatOne() {
+        // The SDK hands every getPaywall for a paywall the same cached view, and takes it out of whatever shows it
+        // first, so its parent can't tell that another embedded paywall shows it.
+        val view = String(charArrayOf('p'))
+        val first = EmbeddedPaywallLifecycle(RecordingTeardown()).apply { attach(view) }
+        val second = EmbeddedPaywallLifecycle(RecordingTeardown())
+        val live = listOf(first, second)
+
+        assertSame(first, embeddedPaywallShowing(second, live) { it.owns(view) })
+        // Not the one that just got it, which hasn't attached it.
+        second.attach(view)
+        assertSame(first, embeddedPaywallShowing(second, live) { it.owns(view) })
+        // Another view equal by value isn't the same view.
+        assertNull(embeddedPaywallShowing(second, live) { it.owns(String(charArrayOf('p'))) })
+        // One that was removed shows nothing.
+        first.remove()
+        assertNull(embeddedPaywallShowing(second, live) { it.owns(view) })
     }
 
     @Test
@@ -340,6 +361,24 @@ class BridgeLogicTest {
         assertEquals(0, bridge.embeddedPaywallCount)
         // And it can be reset again, as a second teardown would.
         bridge.resetBridgeState()
+    }
+
+    @Test
+    fun teardown_removesEmbeddedPaywallsOnTheMainThreadOnly() {
+        // Unity calls teardown on its own thread. A view can only be taken off the screen on the main thread.
+        val main = StandardTestDispatcher()
+        Dispatchers.setMain(main)
+        val embeddedPaywalls = SuperwallUnityBridge::class.java.getDeclaredField("embeddedPaywalls").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val map = embeddedPaywalls.get(bridge) as MutableMap<String, Any>
+        map["view-1"] = bridge.UnityEmbeddedPaywall("view-1", Activity(), floatArrayOf(0f, 0f, 1f, 1f))
+
+        bridge.resetBridgeState()
+        assertNull("cleared at once, off the main thread", staticField("unityDelegate").get(null))
+        assertEquals("the embedded paywall is left to the main thread", 1, bridge.embeddedPaywallCount)
+
+        main.scheduler.advanceUntilIdle()
+        assertEquals(0, bridge.embeddedPaywallCount)
     }
 
     private fun SuperwallUnityBridge.setDelegateForTest() {

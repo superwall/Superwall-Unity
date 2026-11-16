@@ -64,12 +64,14 @@ import android.widget.FrameLayout
 import com.superwall.sdk.paywall.presentation.get_paywall.builder.PaywallBuilder
 import com.superwall.sdk.paywall.view.PaywallView
 import com.superwall.sdk.paywall.view.delegate.PaywallViewCallback
+import com.superwall.sdk.paywall.view.delegate.PaywallViewDelegateAdapter
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.superwall.sdk.paywall.presentation.get_presentation_result.getPresentationResult
 import com.superwall.sdk.paywall.presentation.result.PresentationResult
 import com.superwall.sdk.analytics.superwall.SuperwallEvent
 import com.superwall.sdk.analytics.superwall.SuperwallEventInfo
+import java.lang.ref.WeakReference
 import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -754,8 +756,26 @@ class SuperwallUnityBridge {
             }
         }
 
+        fun shows(paywall: PaywallView): Boolean = lifecycle.owns(paywall)
+
+        /**
+         * Takes [paywall] back after getPaywall handed it to another embedded paywall. The SDK caches one PaywallView
+         * per paywall, and getPaywall took it out of this host (prepareToDisplay) and gave it the other one's delegate
+         * and activity.
+         */
+        fun reclaim(paywall: PaywallView) {
+            paywall.callback = PaywallViewDelegateAdapter(this)
+            paywall.encapsulatingActivity = WeakReference(activity)
+            if (paywall.parent == null) {
+                host.addView(paywall, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            }
+        }
+
         private fun show(paywall: PaywallView) {
-            if (paywall.parent != null) {
+            // The paywall's parent can't tell: getPaywall has already taken the view out of the other one's host.
+            val owner = embeddedPaywallShowing(this, embeddedPaywalls.values) { it.shows(paywall) }
+            if (owner != null) {
+                owner.reclaim(paywall)
                 reportError("The paywall is already shown elsewhere. Use a different placement for each embedded paywall.")
                 return
             }
@@ -815,15 +835,20 @@ class SuperwallUnityBridge {
     }
 
     // Everything the bridge holds for the SDK instance that is gone. C# forgets its embedded paywalls at the same
-    // time and could never remove them afterwards, so they are taken off the screen here.
+    // time and could never remove them afterwards, so they are taken off the screen here. Unity calls this on its
+    // own thread: the embedded paywalls' views, and the maps the main thread uses, are only touched from the main
+    // thread, after anything already queued there. A call made after this one, such as showing a paywall for the
+    // next instance, is queued behind it.
     internal fun resetBridgeState() {
         unityDelegate = null
         unityPurchaseController = null
         latestIntegrationAttributes = null
-        purchaseObserver.clear()
-        val embedded = embeddedPaywalls.values.toList()
-        embeddedPaywalls.clear()
-        embedded.forEach { it.remove() }
+        scope.launch {
+            purchaseObserver.clear()
+            val embedded = embeddedPaywalls.values.toList()
+            embeddedPaywalls.clear()
+            embedded.forEach { it.remove() }
+        }
     }
 
     fun getPresentationResult(placement: String, paramsJson: String?, callbackId: String) {
@@ -2548,6 +2573,14 @@ internal class EmbeddedPaywallLifecycle<V : Any>(private val teardown: Teardown<
         teardown.destroy(attached)
     }
 }
+
+/**
+ * The embedded paywall among [live], other than [loading], that [shows] the paywall [loading] just got. The SDK hands
+ * the same cached view to every getPaywall for a paywall, so a second embedded paywall can be given the view a first
+ * one shows.
+ */
+internal fun <E : Any> embeddedPaywallShowing(loading: E, live: Iterable<E>, shows: (E) -> Boolean): E? =
+    live.firstOrNull { it !== loading && shows(it) }
 
 /**
  * Where an embedded paywall goes: left, top, width and height in pixels, from a rectangle given as fractions of a
