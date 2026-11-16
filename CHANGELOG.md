@@ -1,7 +1,7 @@
 # Changelog
 All notable changes to this package will be documented in this file.
 
-## [Unreleased]
+## [0.7.0]
 
 ### Enhancements
 * Adds the Customer Center, a screen where users view and manage their subscriptions, request refunds, restore purchases and contact support. Show it with `Superwall.Shared.PresentCustomerCenter(configuration, customerCenterDelegate, onDismiss)` and close it with `DismissCustomerCenter(completion)`. `CustomerCenterConfiguration` sets its screens, paths (`CustomerCenterPath.Restore()`, `ManageSubscription()`, `Refund()`, `ChangePlan()`, `ContactSupport()`, `ForUrl()` and `Custom()`), surveys, support details and accent colour; set the default with `SuperwallOptions.CustomerCenter`, or leave it to use `CustomerCenterConfiguration.Default`. An `ICustomerCenterDelegate` hears which path the user tapped and for which purchase, survey answers, refund requests and the dismissal. `ShouldRestorePurchases` is iOS only: on Android the Customer Center is its own activity, which pauses Unity, so the restore goes ahead without asking.

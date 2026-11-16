@@ -12,7 +12,7 @@ namespace Superwall
         internal const string PlatformWrapper = "Unity";
 
         /// <summary>This package's version, as in package.json. A test keeps the two in step.</summary>
-        internal const string PackageVersion = "0.6.0";
+        internal const string PackageVersion = "0.7.0";
 
         private static Superwall _shared;
         private ISuperwallDelegate _delegate;
