@@ -521,7 +521,8 @@ Superwall.Shared.LocaleIdentifier = "en_US";
 | `IsConfigured` | Whether SDK is configured |
 | `LogLevel` | Get/set log level |
 | `Purchase(productId, callback)` | Programmatic purchase |
-| `GetProducts(productIds, callback)` | Fetch product details. A callback with a second argument also receives the error, if any |
+| `GetProducts(productIds, callback)` | Fetch product details |
+| `GetProductsWithError(productIds, callback)` | Fetch product details; the callback's second argument is the error, if any |
 | `GetPresentationResult(placement, params?, callback)` | Check what would happen for a placement |
 | `GetAssignments(callback)` | Get experiment assignments |
 | `ConfirmAllAssignments(callback)` | Confirm all experiment assignments |

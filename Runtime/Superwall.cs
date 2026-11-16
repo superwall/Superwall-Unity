@@ -762,16 +762,17 @@ namespace Superwall
 
         public void GetProducts(List<string> productIds, Action<Dictionary<string, StoreProduct>> completion)
         {
-            GetProducts(productIds, (products, error) => completion?.Invoke(products));
+            GetProductsWithError(productIds, (products, error) => completion?.Invoke(products));
         }
 
         /// <summary>
         /// Fetches the products with these identifiers from the store, keyed by identifier.
         /// <paramref name="completion"/>'s second argument is null on success. On Android it is the error when the store
         /// couldn't be asked, in which case there are no products. SuperwallKit reports no error: on iOS a product
-        /// that couldn't be fetched is only missing from the result.
+        /// that couldn't be fetched is only missing from the result. Named apart from <see cref="GetProducts"/> so that
+        /// a call passing a null completion, valid before this method existed, isn't ambiguous.
         /// </summary>
-        public void GetProducts(List<string> productIds, Action<Dictionary<string, StoreProduct>, string> completion)
+        public void GetProductsWithError(List<string> productIds, Action<Dictionary<string, StoreProduct>, string> completion)
         {
             string callbackId = Guid.NewGuid().ToString();
             BridgeCallbackHandler.Instance.RegisterAsyncCallback(callbackId, (json) =>
@@ -1007,8 +1008,9 @@ namespace Superwall
         /// <summary>
         /// iOS only. Forwards the input of every connected game controller to the paywall, which needs
         /// <see cref="SuperwallOptions.IsGameControllerEnabled"/>. The bridge listens to each controller's extended
-        /// gamepad and passes its changes to SuperwallKit; a handler the game set itself on a gamepad's
-        /// <c>valueChangedHandler</c> keeps being called. Pass false to stop. On Android use
+        /// gamepad and passes its changes to SuperwallKit; a handler the game had set on a gamepad's
+        /// <c>valueChangedHandler</c> keeps being called. A handler the game sets after forwarding starts replaces
+        /// forwarding on that gamepad and is kept when forwarding stops. Pass false to stop. On Android use
         /// <see cref="DispatchGameControllerKeyEvent"/> and <see cref="DispatchGameControllerMotionEvent"/>.
         /// </summary>
         public void SetGameControllerForwardingEnabled(bool enabled)

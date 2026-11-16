@@ -719,7 +719,7 @@ namespace Superwall.Tests
             var customerCenterDismissed = false;
 
             superwall.RegisterPlacement("campaign", null, new PaywallPresentationHandler(), () => featureRan = true);
-            superwall.GetProducts(new List<string> { "pro" }, (result, error) => { products = result; productsError = error; });
+            superwall.GetProductsWithError(new List<string> { "pro" }, (result, error) => { products = result; productsError = error; });
             superwall.Purchase("pro", result => purchase = result);
             superwall.RestorePurchases(result => restore = result);
             superwall.GetPresentationResult("campaign", null, result => presentation = result);
@@ -757,6 +757,15 @@ namespace Superwall.Tests
             superwall.GetProducts(new List<string> { "pro" }, result => products = result);
             BridgeCallbackHandler.Instance.RunSimulatedCallbacks();
             Assert.AreEqual(0, products.Count);
+        }
+
+        [Test]
+        public void GetProducts_TakesANullCompletion_AsBefore()
+        {
+            var superwall = UnconfiguredInstance();
+            // A prefetch with no completion compiled before the overload with the error existed; it must still compile.
+            superwall.GetProducts(new List<string> { "pro" }, null);
+            BridgeCallbackHandler.Instance.RunSimulatedCallbacks();
         }
 
         [Test]
