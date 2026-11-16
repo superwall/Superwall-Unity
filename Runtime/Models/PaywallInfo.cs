@@ -155,7 +155,13 @@ namespace Superwall
         public string Title;
         public string Subtitle;
         public string Body;
+        /// <summary>
+        /// The delay to the notification, in milliseconds. A delay too long for an <c>int</c> (over about 24.8 days)
+        /// is <see cref="int.MaxValue"/> here; <see cref="DelayMilliseconds"/> has the exact value.
+        /// </summary>
         public int Delay;
+        /// <summary>The delay to the notification, in milliseconds.</summary>
+        public long DelayMilliseconds;
     }
 
     [Serializable]

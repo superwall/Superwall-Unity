@@ -42,7 +42,6 @@ import com.superwall.sdk.paywall.presentation.PaywallPresentationHandler
 import com.superwall.sdk.paywall.presentation.register
 import com.superwall.sdk.paywall.presentation.dismiss
 import com.superwall.sdk.paywall.presentation.dismissForNextPaywall
-import com.superwall.sdk.paywall.presentation.dismissSync
 import com.superwall.sdk.game.dispatchKeyEvent
 import com.superwall.sdk.game.dispatchMotionEvent
 import com.superwall.sdk.web.openRestoreOnWeb
@@ -551,19 +550,30 @@ class SuperwallUnityBridge {
         else -> "noAudienceMatch"
     }
 
-    fun dismiss() { Superwall.instance.dismissSync() }
+    // Every dismissal goes through here, on the main thread: see DismissCoalescer.
+    private val dismissals = DismissCoalescer<PaywallView>()
+
+    private suspend fun dismissPresentedPaywall(action: suspend Superwall.() -> Unit) {
+        if (!Superwall.initialized) return
+        val superwall = Superwall.instance
+        dismissals.dismiss(superwall.paywallView) { superwall.action() }
+    }
+
+    fun dismiss() {
+        scope.launch { dismissPresentedPaywall { dismiss() } }
+    }
 
     // C# sends an empty callbackId when there is no completion to call.
     fun dismissWithCompletion(callbackId: String) {
         scope.launch {
-            if (Superwall.initialized) Superwall.instance.dismiss()
+            dismissPresentedPaywall { dismiss() }
             if (callbackId.isNotEmpty()) sendAsyncResponse(callbackId, JSONObject())
         }
     }
 
     fun dismissForNextPaywall(callbackId: String) {
         scope.launch {
-            if (Superwall.initialized) Superwall.instance.dismissForNextPaywall()
+            dismissPresentedPaywall { dismissForNextPaywall() }
             if (callbackId.isNotEmpty()) sendAsyncResponse(callbackId, JSONObject())
         }
     }
@@ -1589,12 +1599,13 @@ class SuperwallUnityBridge {
         set.forEach { put(serializeEntitlement(it)) }
     }
 
-    // java.time needs API 26 and this module's minSdk is 25, hence SimpleDateFormat.
-    private val iso8601Formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
-    }
-
-    private fun iso8601String(date: Date): String = iso8601Formatter.format(date)
+    // java.time needs API 26 and this module's minSdk is 25, hence SimpleDateFormat. A new one each time: it isn't
+    // thread-safe, and the SDK calls the delegate (whose events carry transactions and products) on its own threads
+    // while getProducts serializes on the main thread.
+    private fun iso8601String(date: Date): String =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }.format(date)
 
     // Mirrors the C# `StoreTransaction` model (Runtime/Models/StoreTransaction.cs). Dates are ISO 8601
     // strings, matching the model's string fields. Optional values are omitted rather than sent as null.
@@ -2571,6 +2582,36 @@ internal class EmbeddedPaywallLifecycle<V : Any>(private val teardown: Teardown<
         teardown.detach(attached)
         teardown.beforeDestroy(attached)
         teardown.destroy(attached)
+    }
+}
+
+/**
+ * Runs one dismissal of a paywall at a time. The SDK keeps one dismiss completion per paywall view: dismissing a view
+ * that is already closing replaces the completion of the dismissal under way, whose caller then waits forever. So a
+ * dismissal of the view ([V]) a running one is closing waits for that one instead of starting another; the first
+ * call's close reason is the one used. A null view (nothing presented) dismisses straight away. Main thread only.
+ */
+internal class DismissCoalescer<V : Any> {
+    private class Run<V>(val view: V?) {
+        val done = CompletableDeferred<Unit>()
+    }
+
+    private var running: Run<V>? = null
+
+    suspend fun dismiss(view: V?, dismiss: suspend () -> Unit) {
+        val current = running
+        if (view != null && current != null && current.view === view) {
+            current.done.await()
+            return
+        }
+        val run = Run(view)
+        if (view != null) running = run
+        try {
+            dismiss()
+        } finally {
+            if (running === run) running = null
+            run.done.complete(Unit)
+        }
     }
 }
 

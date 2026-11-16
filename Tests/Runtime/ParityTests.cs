@@ -162,6 +162,26 @@ namespace Superwall.Tests
             Assert.IsNull(info.CustomerInfo);
         }
 
+        [Test]
+        public void LocalNotification_DelayLongerThanAnInt_KeepsItsValue()
+        {
+            // 28 days in milliseconds, as both bridges send it: more than int.MaxValue. MiniJson reads it as a long.
+            const long twentyEightDays = 28L * 24 * 60 * 60 * 1000;
+            var info = BridgeCallbackHandler.DeserializePaywallInfo(new Dictionary<string, object>
+            {
+                { "localNotifications", new List<object>
+                    {
+                        new Dictionary<string, object> { { "type", "trialStarted" }, { "title", "t" }, { "body", "b" }, { "delay", twentyEightDays } },
+                        new Dictionary<string, object> { { "type", "trialStarted" }, { "title", "t" }, { "body", "b" }, { "delay", 5000 } },
+                    }
+                },
+            });
+            Assert.AreEqual(twentyEightDays, info.LocalNotifications[0].DelayMilliseconds);
+            Assert.AreEqual(int.MaxValue, info.LocalNotifications[0].Delay);
+            Assert.AreEqual(5000L, info.LocalNotifications[1].DelayMilliseconds);
+            Assert.AreEqual(5000, info.LocalNotifications[1].Delay);
+        }
+
         // --- Store product ---
 
         [Test]

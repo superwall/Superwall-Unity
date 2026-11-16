@@ -46,6 +46,7 @@ All notable changes to this package will be documented in this file.
 * Adds `SubscriptionPeriod` to `StoreProduct`, plus the iOS-only `IntroductoryDiscount`, `Discounts`, `BillingPlanType` and `IsBillingPlanAvailable`.
 * Adds the remaining event values to `SuperwallEventInfo`: `AttributionMatchInfo` (attribution match), `PageViewData` (paywall page view), `TransactionProduct` (non-recurring product purchase), `StatusReason` (why a presentation request presented nothing), `PlacementParams` (custom placement), `ReviewCount` (review requested and, on Android, granted and denied), and the Android-only `ShimmerDuration`, `ResourceUrl` (the URL of a failed paywall resource), `PreviousCustomerInfo` and `CustomerInfo` (customer info did change).
 * Adds `LatestSubscriptionState.Unknown` and `LatestSubscriptionOfferType.Subscription` and `.Revoked` (all Android only), which used to arrive as null.
+* Adds `LocalNotification.DelayMilliseconds`, the notification's delay as a `long`. See the fix to `LocalNotification.Delay`.
 
 ### Fixes
 * `SetIntegrationAttribute` and `SetIntegrationAttributes` did nothing on either platform: C# sent the enum member's name (`AdjustId`) and both native bridges only accept the SDKs' own names (`adjustId`), so every call was dropped. They now reach the native SDKs. A null value removes the attribute, as natively. On Android each call now changes only the attributes passed; the Android SDK replaces the whole set on every call, so the bridge merges into the current set to match iOS.
@@ -68,6 +69,10 @@ All notable changes to this package will be documented in this file.
 * iOS: the `Configure` completion always reported success. It now reports a failure when SuperwallKit couldn't fetch its configuration.
 * Each `RegisterPlacement` call with a handler kept that handler for the life of the app. It is now let go once its paywall is dismissed, skipped or fails. A paywall closed to present the next one in the same call keeps it.
 * `ShowAlert` kept whichever of `onAction` and `onClose` wasn't called. Each now lets go of the other.
+* Android: `Dismiss()` blocked Unity's main thread until the paywall had finished closing. It now returns at once.
+* Calling `Dismiss` or `Dismiss(completion)` while the same paywall was already being dismissed replaced the earlier call's completion in the native SDKs, so that completion never ran; on Android an earlier `Dismiss()` could also block Unity's main thread for good. A dismissal of a paywall that is already closing now waits for that one, and every completion runs once it has closed.
+* `LocalNotification.Delay` turned negative for a delay longer than about 24.8 days (a trial reminder a month out), because the native millisecond value doesn't fit in an `int`. It is now capped at `int.MaxValue`, and the new `DelayMilliseconds` has the exact value.
+* Android: dates in `StoreTransaction` and `StoreProduct.TrialPeriodEndDate` could come out garbled when two were formatted at once on different threads, such as a transaction event during a `GetProducts` call.
 * In the Editor, and on platforms other than iOS and Android, no completion ever ran and each call left one registered: `Configure`, `RegisterPlacement`'s `feature` block, `GetProducts`, `Purchase`, `RestorePurchases`, `GetCustomerInfo`, `GetPresentationResult`, `GetAssignments`, `ConfirmAllAssignments`, `GetDeviceAttributes`, `Consume`, `ShowAlert` and the Customer Center calls. They now complete on the next frame; see the behaviour changes.
 
 ### Behaviour changes

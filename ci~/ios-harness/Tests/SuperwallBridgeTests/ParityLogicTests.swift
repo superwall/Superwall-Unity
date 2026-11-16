@@ -258,3 +258,56 @@ final class UnityGameControllerForwarderTests: XCTestCase {
         XCTAssertEqual(forwarder.attachedGamepadCount, 0)
     }
 }
+
+@MainActor
+final class UnityDismissalsTests: XCTestCase {
+    func testADismissalOfAPaywallAlreadyClosingWaitsForThatOne() async {
+        let dismissals = UnityDismissals()
+        let paywall = NSObject()
+        var started = 0
+        var finished: [String] = []
+        var release: CheckedContinuation<Void, Never>?
+        let start: @MainActor () async -> Void = {
+            started += 1
+            await withCheckedContinuation { release = $0 }
+        }
+        let bothFinished = expectation(description: "both finished")
+        bothFinished.expectedFulfillmentCount = 2
+        dismissals.dismiss(paywall, start: start) { finished.append("first"); bothFinished.fulfill() }
+        dismissals.dismiss(paywall, start: start) { finished.append("second"); bothFinished.fulfill() }
+        while release == nil { await Task.yield() }
+
+        // SuperwallKit would replace the first dismissal's completion with the second's, so it's started only once.
+        XCTAssertEqual(started, 1)
+        XCTAssertEqual(finished, [])
+        release?.resume()
+        await fulfillment(of: [bothFinished], timeout: 5)
+        XCTAssertEqual(finished, ["first", "second"])
+
+        // Once it has finished, the next dismissal of the same paywall starts its own.
+        let third = expectation(description: "third")
+        dismissals.dismiss(paywall, start: { started += 1 }) { third.fulfill() }
+        await fulfillment(of: [third], timeout: 5)
+        XCTAssertEqual(started, 2)
+    }
+
+    func testADismissalOfAnotherPaywallOrOfNothingStartsItsOwn() async {
+        let dismissals = UnityDismissals()
+        var started = 0
+        var release: CheckedContinuation<Void, Never>?
+        dismissals.dismiss(NSObject(), start: {
+            started += 1
+            await withCheckedContinuation { release = $0 }
+        }) {}
+        while release == nil { await Task.yield() }
+
+        let others = expectation(description: "others")
+        others.expectedFulfillmentCount = 3
+        dismissals.dismiss(NSObject(), start: { started += 1 }) { others.fulfill() }
+        dismissals.dismiss(nil, start: { started += 1 }) { others.fulfill() }
+        dismissals.dismiss(nil, start: { started += 1 }) { others.fulfill() }
+        await fulfillment(of: [others], timeout: 5)
+        XCTAssertEqual(started, 4)
+        release?.resume()
+    }
+}

@@ -734,7 +734,10 @@ namespace Superwall.Internal
             n.Title = GetString(data, "title");
             n.Subtitle = GetString(data, "subtitle");
             n.Body = GetString(data, "body");
-            n.Delay = GetIntNullable(data, "delay") ?? 0;
+            // Milliseconds, a long natively: a trial reminder a month out doesn't fit in an int, and a cast would
+            // turn it negative.
+            n.DelayMilliseconds = GetLong(data, "delay");
+            n.Delay = (int)Math.Max(int.MinValue, Math.Min(int.MaxValue, n.DelayMilliseconds));
             return n;
         }
 

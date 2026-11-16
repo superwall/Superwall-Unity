@@ -51,6 +51,62 @@ class BridgeLogicTest {
 
     private fun sentToUnity(): List<JSONObject> = UnityPlayer.sentMessages.toList().map { JSONObject(it) }
 
+    // --- Dismiss ---
+
+    @Test
+    fun dismiss_ofAPaywallAlreadyClosing_waitsForThatDismissal() = runTest {
+        val coalescer = DismissCoalescer<Any>()
+        val paywall = Any()
+        val closed = CompletableDeferred<Unit>()
+        var started = 0
+        val finished = mutableListOf<String>()
+        launch { coalescer.dismiss(paywall) { started++; closed.await() }; finished += "first" }
+        launch { coalescer.dismiss(paywall) { started++; closed.await() }; finished += "second" }
+        testScheduler.advanceUntilIdle()
+        // The SDK would replace the first dismissal's completion with the second's, so it's started only once.
+        assertEquals(1, started)
+        assertEquals(emptyList<String>(), finished)
+
+        closed.complete(Unit)
+        testScheduler.advanceUntilIdle()
+        assertEquals(listOf("first", "second"), finished)
+
+        // Once it has finished, the next dismissal of the same paywall starts its own.
+        coalescer.dismiss(paywall) { started++ }
+        assertEquals(2, started)
+    }
+
+    @Test
+    fun dismiss_ofAnotherPaywallOrOfNothing_startsItsOwn() = runTest {
+        val coalescer = DismissCoalescer<Any>()
+        val closed = CompletableDeferred<Unit>()
+        var started = 0
+        launch { coalescer.dismiss(Any()) { started++; closed.await() } }
+        testScheduler.advanceUntilIdle()
+        coalescer.dismiss(Any()) { started++ }
+        coalescer.dismiss(null) { started++ }
+        coalescer.dismiss(null) { started++ }
+        assertEquals(4, started)
+        closed.complete(Unit)
+    }
+
+    @Test
+    fun dismiss_thatFails_letsTheWaitersGo() = runTest {
+        val coalescer = DismissCoalescer<Any>()
+        val paywall = Any()
+        val gate = CompletableDeferred<Unit>()
+        var waiterDone = false
+        val first = launch {
+            try { coalescer.dismiss(paywall) { gate.await(); throw IllegalStateException("boom") } } catch (_: IllegalStateException) {}
+        }
+        launch { coalescer.dismiss(paywall) { error("not started") }; waiterDone = true }
+        testScheduler.advanceUntilIdle()
+        gate.complete(Unit)
+        testScheduler.advanceUntilIdle()
+        assertTrue(first.isCompleted)
+        assertTrue(waiterDone)
+    }
+
     // --- Embedded paywall ---
 
     @Test

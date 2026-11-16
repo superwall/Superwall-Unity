@@ -1954,20 +1954,64 @@ func serializePaywallResult(_ result: PaywallResult) -> [String: Any] {
     }
 }
 
+/// Runs one dismissal of a paywall at a time. SuperwallKit keeps one dismiss completion per paywall view controller:
+/// dismissing one that is already closing replaces the completion of the dismissal under way, which then never
+/// finishes. So a dismissal of the paywall a running one is closing waits for that one instead of starting another.
+/// A nil paywall (nothing presented) dismisses straight away.
+@MainActor
+final class UnityDismissals {
+    private final class Run {
+        let paywall: AnyObject?
+        var completions: [() -> Void]
+
+        init(paywall: AnyObject?, completion: @escaping () -> Void) {
+            self.paywall = paywall
+            self.completions = [completion]
+        }
+    }
+
+    private var running: Run?
+
+    func dismiss(_ paywall: AnyObject?, start: @escaping @MainActor () async -> Void, completion: @escaping () -> Void) {
+        if let paywall = paywall, let running = running, running.paywall === paywall {
+            running.completions.append(completion)
+            return
+        }
+        let run = Run(paywall: paywall, completion: completion)
+        if paywall != nil { running = run }
+        Task { @MainActor in
+            await start()
+            if self.running === run { self.running = nil }
+            run.completions.forEach { $0() }
+        }
+    }
+}
+
+@MainActor private let unityDismissals = UnityDismissals()
+
+private func dismissPresentedPaywall(completion: @escaping () -> Void) {
+    Task { @MainActor in
+        guard Superwall.isInitialized else {
+            completion()
+            return
+        }
+        unityDismissals.dismiss(
+            Superwall.shared.presentedViewController,
+            start: { await Superwall.shared.dismiss() },
+            completion: completion
+        )
+    }
+}
+
 @_cdecl("_SuperwallBridge_Dismiss")
 public func _SuperwallBridge_Dismiss() {
-    Superwall.shared.dismiss()
+    dismissPresentedPaywall {}
 }
 
 @_cdecl("_SuperwallBridge_DismissWithCompletion")
 public func _SuperwallBridge_DismissWithCompletion(_ callbackId: UnsafePointer<CChar>?) {
     let cbId = toSwiftString(callbackId)
-    let completion: () -> Void = { if let cbId = cbId { sendAsyncResponse(callbackId: cbId, data: [:]) } }
-    guard Superwall.isInitialized else {
-        completion()
-        return
-    }
-    Superwall.shared.dismiss(completion: completion)
+    dismissPresentedPaywall { if let cbId = cbId { sendAsyncResponse(callbackId: cbId, data: [:]) } }
 }
 
 @_cdecl("_SuperwallBridge_GetPresentationResult")
