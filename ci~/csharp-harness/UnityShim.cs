@@ -46,6 +46,20 @@ namespace UnityEngine
 
         public static GameObject Find(string name) =>
             Objects.TryGetValue(name, out var found) ? found : null;
+
+        // One frame of Unity's player loop, as far as Runtime/ uses it: every MonoBehaviour's Update.
+        internal static void RunUpdates()
+        {
+            foreach (var gameObject in Objects.Values.ToList())
+            {
+                foreach (var component in gameObject._components.ToList())
+                {
+                    component.GetType()
+                        .GetMethod("Update", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                        ?.Invoke(component, null);
+                }
+            }
+        }
     }
 
 #if UNITY_ANDROID

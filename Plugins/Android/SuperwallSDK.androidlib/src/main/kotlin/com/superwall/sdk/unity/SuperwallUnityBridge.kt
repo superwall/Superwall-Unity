@@ -256,15 +256,9 @@ class SuperwallUnityBridge {
         customCallbacks.unityPausedWhilePresenting =
             options.paywalls.presentationHost == com.superwall.sdk.config.options.PaywallOptions.PresentationHost.ACTIVITY
 
-        loadingColorResourceName(optionsJson)?.let { name ->
-            // The SDK takes a colour resource, so C# names one and it's looked up in the app's resources.
-            val id = activity.resources.getIdentifier(name, "color", activity.packageName)
-            if (id != 0) {
-                options.paywalls.loadingColor = id
-            } else {
-                android.util.Log.w(TAG, "No colour resource named '$name' for PaywallOptions.LoadingColorResourceName")
-            }
-        }
+        // The SDK takes a colour resource, so C# names one and it's looked up in the app's resources.
+        resolveLoadingColor(optionsJson) { name -> activity.resources.getIdentifier(name, "color", activity.packageName) }
+            ?.let { options.paywalls.loadingColor = it }
 
         val unityActivityProvider = object : com.superwall.sdk.misc.ActivityProvider {
             override fun getCurrentActivity(): Activity? = UnityPlayer.currentActivity
@@ -487,12 +481,7 @@ class SuperwallUnityBridge {
     }
 
     fun registerPlacement(placement: String, paramsJson: String?, handlerId: String?, featureId: String?, callbackId: String?) {
-        val params = paramsJson?.let {
-            try {
-                @Suppress("UNCHECKED_CAST")
-                (jsonToMap(JSONObject(it)).filterValues { value -> value != null } as Map<String, Any>)
-            } catch (_: JSONException) { null }
-        }
+        val params = parsePlacementParams(paramsJson)
 
         var handler: PaywallPresentationHandler? = null
         if (handlerId != null) {
@@ -590,44 +579,27 @@ class SuperwallUnityBridge {
     // The SDK's observe calls take Google Play Billing's own objects, which C# doesn't have. The product details
     // are the SDK's (fetched once per product), and a purchase is rebuilt from its original JSON and signature.
     // Each call waits for the one before it, so a result can't overtake the start whose product is still loading.
-    private val observerLock = Mutex()
-    private val observedProductDetails = mutableMapOf<String, ProductDetails>()
-
-    private suspend fun productDetailsFor(productId: String): ProductDetails? {
-        observedProductDetails[productId]?.let { return it }
-        val product = Superwall.instance.getProducts(productId).getOrNull()?.values?.firstOrNull()
-        val details = product?.rawStoreProduct?.underlyingProductDetails
-        if (details == null) {
-            android.util.Log.w(TAG, "No Google Play product details for $productId; the purchase is not observed.")
-        } else {
-            observedProductDetails[productId] = details
-        }
-        return details
-    }
+    private val purchaseObserver = UnityPurchaseObserver<ProductDetails>(
+        isConfigured = { Superwall.initialized },
+        findProduct = { productId ->
+            Superwall.instance.getProducts(productId).getOrNull()?.values?.firstOrNull()?.rawStoreProduct?.underlyingProductDetails
+        },
+        onStart = { Superwall.instance.observePurchaseStart(it) },
+        onError = { product, error -> Superwall.instance.observePurchaseError(product, error) },
+    )
 
     fun observePurchaseStart(productId: String) {
-        scope.launch {
-            observerLock.withLock {
-                if (!Superwall.initialized) return@withLock
-                productDetailsFor(productId)?.let { Superwall.instance.observePurchaseStart(it) }
-            }
-        }
+        scope.launch { purchaseObserver.start(productId) }
     }
 
     fun observePurchaseError(productId: String, error: String) {
-        scope.launch {
-            observerLock.withLock {
-                if (!Superwall.initialized) return@withLock
-                productDetailsFor(productId)?.let { Superwall.instance.observePurchaseError(it, Throwable(error)) }
-            }
-        }
+        scope.launch { purchaseObserver.error(productId, error) }
     }
 
     fun observePurchaseResult(billingResponseCode: Int, debugMessage: String, purchasesJson: String) {
         val purchases = parseObservedPurchases(purchasesJson)
         scope.launch {
-            observerLock.withLock {
-                if (!Superwall.initialized) return@withLock
+            purchaseObserver.result {
                 val result = BillingResult.newBuilder()
                     .setResponseCode(billingResponseCode)
                     .setDebugMessage(debugMessage)
@@ -657,8 +629,7 @@ class SuperwallUnityBridge {
 
     fun dispatchGameControllerKeyEvent(keyCode: Int, isPressed: Boolean) {
         if (!Superwall.initialized) return
-        val action = if (isPressed) android.view.KeyEvent.ACTION_DOWN else android.view.KeyEvent.ACTION_UP
-        Superwall.instance.dispatchKeyEvent(android.view.KeyEvent(action, keyCode))
+        Superwall.instance.dispatchKeyEvent(android.view.KeyEvent(gameControllerKeyAction(isPressed), keyCode))
     }
 
     fun dispatchGameControllerMotionEvent(x: Float, y: Float) {
@@ -675,12 +646,7 @@ class SuperwallUnityBridge {
     // x, y, width and height are fractions of the activity's content view, with y measured from the top.
     // C# sends an empty paramsJson when there are no parameters.
     fun showEmbeddedPaywall(viewId: String, placement: String, paramsJson: String, x: Float, y: Float, width: Float, height: Float) {
-        val params = paramsJson.takeIf { it.isNotEmpty() }?.let {
-            try {
-                @Suppress("UNCHECKED_CAST")
-                (jsonToMap(JSONObject(it)).filterValues { value -> value != null } as Map<String, Any>)
-            } catch (_: JSONException) { null }
-        }
+        val params = parsePlacementParams(paramsJson)
         scope.launch {
             val activity = UnityPlayer.currentActivity
             if (!Superwall.initialized || activity == null) {
@@ -707,20 +673,36 @@ class SuperwallUnityBridge {
     // Only touched on the main thread.
     private val embeddedPaywalls = mutableMapOf<String, UnityEmbeddedPaywall>()
 
+    internal val embeddedPaywallCount: Int get() = embeddedPaywalls.size
+
+    // What C# hears when no paywall could be built: a skip with its reason, or an error with the SDK's explanation.
+    internal fun embeddedPaywallLoadFailure(viewId: String, error: Throwable): Pair<String, JSONObject> =
+        if (error is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason) {
+            "embeddedPaywallOnSkip" to JSONObject().apply {
+                put("viewId", viewId)
+                put("reason", skippedReasonName(error))
+                (error as? com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.Holdout)
+                    ?.let { put("experiment", serializeExperiment(it.experiment)) }
+            }
+        } else {
+            "embeddedPaywallOnError" to JSONObject()
+                .put("viewId", viewId)
+                .put("error", (error as? PaywallPresentationRequestStatusReason)?.info ?: error.localizedMessage ?: error.toString())
+        }
+
     /**
      * One paywall shown inside the game's activity, built with the SDK's [PaywallBuilder]. Its host is laid over the
      * activity's content, sized and placed from the rectangle C# gives as fractions of that content, so it stays
      * right when the content is resized. The SDK caches and shares PaywallView instances, so the paywall is torn
      * down only when this presentation ends, and that teardown isn't cancelled part-way.
      */
-    private inner class UnityEmbeddedPaywall(
+    internal inner class UnityEmbeddedPaywall(
         private val viewId: String,
         private val activity: Activity,
         private var rect: FloatArray,
-    ) : PaywallViewCallback {
+    ) : PaywallViewCallback, EmbeddedPaywallLifecycle.Teardown<PaywallView> {
         private val host = FrameLayout(activity)
-        private var paywallView: PaywallView? = null
-        private var removed = false
+        private val lifecycle = EmbeddedPaywallLifecycle(this)
         private var loadJob: Job? = null
         private val content: View? get() = activity.findViewById(android.R.id.content)
         private val contentLayoutListener = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutHost() }
@@ -728,20 +710,12 @@ class SuperwallUnityBridge {
         fun load(placement: String, params: Map<String, Any>?) {
             loadJob = scope.launch {
                 val result = PaywallBuilder(placement).params(params).delegate(this@UnityEmbeddedPaywall).activity(activity).build()
-                if (removed) return@launch
+                if (lifecycle.isRemoved) return@launch
                 result.fold(
                     onSuccess = { show(it) },
                     onFailure = { error ->
-                        if (error is com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason) {
-                            sendToUnity("embeddedPaywallOnSkip", JSONObject().apply {
-                                put("viewId", viewId)
-                                put("reason", skippedReasonName(error))
-                                (error as? com.superwall.sdk.paywall.presentation.internal.state.PaywallSkippedReason.Holdout)
-                                    ?.let { put("experiment", serializeExperiment(it.experiment)) }
-                            })
-                        } else {
-                            reportError((error as? PaywallPresentationRequestStatusReason)?.info ?: error.localizedMessage ?: error.toString())
-                        }
+                        val (method, data) = embeddedPaywallLoadFailure(viewId, error)
+                        sendToUnity(method, data)
                     },
                 )
             }
@@ -752,21 +726,31 @@ class SuperwallUnityBridge {
             layoutHost()
         }
 
-        fun remove() {
-            if (removed) return
-            removed = true
+        fun remove() = lifecycle.remove()
+
+        override fun cancelLoad() {
             loadJob?.cancel()
+        }
+
+        override fun removeHost() {
             content?.removeOnLayoutChangeListener(contentLayoutListener)
             (host.parent as? ViewGroup)?.removeView(host)
-            val paywall = paywallView ?: return
-            paywallView = null
-            host.removeView(paywall)
-            paywall.beforeOnDestroy(forceCleanup = true)
-            paywall.encapsulatingActivity = null
+        }
+
+        override fun detach(view: PaywallView) {
+            host.removeView(view)
+        }
+
+        override fun beforeDestroy(view: PaywallView) {
+            view.beforeOnDestroy(forceCleanup = true)
+            view.encapsulatingActivity = null
+        }
+
+        override fun destroy(view: PaywallView) {
             // On the bridge's scope, which outlives this view: the SDK can hand the same instance out again.
             scope.launch {
-                paywall.destroyed(forceCleanup = true)
-                paywall.cleanup()
+                view.destroyed(forceCleanup = true)
+                view.cleanup()
             }
         }
 
@@ -778,7 +762,7 @@ class SuperwallUnityBridge {
             activity.addContentView(host, FrameLayout.LayoutParams(0, 0))
             content?.addOnLayoutChangeListener(contentLayoutListener)
             layoutHost()
-            paywallView = paywall
+            lifecycle.attach(paywall)
             host.addView(paywall, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             paywall.onViewCreated()
             sendToUnity("embeddedPaywallOnPresent", JSONObject().apply {
@@ -808,7 +792,7 @@ class SuperwallUnityBridge {
             result: com.superwall.sdk.paywall.presentation.internal.state.PaywallResult,
             shouldDismiss: Boolean,
         ) {
-            if (paywall !== paywallView) return
+            if (!lifecycle.owns(paywall)) return
             val data = JSONObject().apply {
                 put("viewId", viewId)
                 put("paywallInfo", serializePaywallInfo(paywall.info))
@@ -827,19 +811,23 @@ class SuperwallUnityBridge {
 
     fun teardown() {
         Superwall.teardown()
+        resetBridgeState()
+    }
+
+    // Everything the bridge holds for the SDK instance that is gone. C# forgets its embedded paywalls at the same
+    // time and could never remove them afterwards, so they are taken off the screen here.
+    internal fun resetBridgeState() {
         unityDelegate = null
         unityPurchaseController = null
         latestIntegrationAttributes = null
-        observedProductDetails.clear()
+        purchaseObserver.clear()
+        val embedded = embeddedPaywalls.values.toList()
+        embeddedPaywalls.clear()
+        embedded.forEach { it.remove() }
     }
 
     fun getPresentationResult(placement: String, paramsJson: String?, callbackId: String) {
-        val params = paramsJson?.let {
-            try {
-                @Suppress("UNCHECKED_CAST")
-                (jsonToMap(JSONObject(it)).filterValues { value -> value != null } as Map<String, Any>)
-            } catch (_: JSONException) { null }
-        }
+        val params = parsePlacementParams(paramsJson)
         scope.launch {
             // Always reply, or the C# completion never runs. iOS reports a failure as paywallNotAvailable.
             val data = Superwall.instance.getPresentationResult(placement, params).fold(
@@ -2059,7 +2047,7 @@ class SuperwallUnityBridge {
         }
     }
 
-    private fun parseOptions(optionsJson: String): SuperwallOptions? = try {
+    internal fun parseOptions(optionsJson: String): SuperwallOptions? = try {
         val json = JSONObject(optionsJson)
         SuperwallOptions().apply {
             paywalls.presentationHost = com.superwall.sdk.config.options.PaywallOptions.PresentationHost.IN_WINDOW
@@ -2137,9 +2125,7 @@ class SuperwallUnityBridge {
                         sendToUnity("onBackPressed", JSONObject().apply {
                             info?.let { put("paywallInfo", serializePaywallInfo(it)) }
                         })
-                        // C# decides what the press does, and can only do so while Unity runs: an in-window paywall.
-                        // An activity-hosted one pauses Unity, so there the press keeps its default behaviour.
-                        paywallOptions.presentationHost == com.superwall.sdk.config.options.PaywallOptions.PresentationHost.IN_WINDOW
+                        backPressConsumedByUnity(paywallOptions.presentationHost)
                     }
                 }
                 if (paywallsJson.has("timeoutAfter")) paywalls.timeoutAfter = paywallsJson.getDouble("timeoutAfter").seconds
@@ -2194,12 +2180,6 @@ class SuperwallUnityBridge {
             enrichmentHost = json.stringOrNull("enrichmentHost") ?: defaults.enrichmentHost,
             mmpHost = json.stringOrNull("mmpHost") ?: defaults.mmpHost,
         )
-    }
-
-    private fun loadingColorResourceName(optionsJson: String?): String? = try {
-        optionsJson?.let { JSONObject(it).optJSONObject("paywalls")?.stringOrNull("loadingColorResourceName") }
-    } catch (_: JSONException) {
-        null
     }
 
     internal fun parseEventTrackingBehavior(name: String?): EventTrackingBehavior? =
@@ -2438,6 +2418,134 @@ class SuperwallUnityBridge {
                 android.util.Log.w(TAG, "Ignoring $kind result for unknown request $callbackId")
             }
         }
+    }
+}
+
+/**
+ * The parameters C# sends with a placement, as the map the SDK takes. Null when there are none (C# sends null or an
+ * empty string) or the JSON can't be read. Null values are left out: the SDK's map can't hold them.
+ */
+internal fun parsePlacementParams(paramsJson: String?): Map<String, Any>? {
+    if (paramsJson.isNullOrEmpty()) return null
+    return try {
+        @Suppress("UNCHECKED_CAST")
+        (jsonToMap(JSONObject(paramsJson)).filterValues { value -> value != null } as Map<String, Any>)
+    } catch (_: JSONException) {
+        null
+    }
+}
+
+/** `PaywallOptions.LoadingColorResourceName` as C# sent it in the options, if it did. */
+internal fun loadingColorResourceName(optionsJson: String?): String? = try {
+    optionsJson?.let { JSONObject(it).optJSONObject("paywalls")?.stringOrNull("loadingColorResourceName") }
+} catch (_: JSONException) {
+    null
+}
+
+/**
+ * The colour resource C# named for the paywall's loading spinner, found with [findResource] (which returns 0 for a
+ * name the app doesn't have, as `Resources.getIdentifier` does). Null leaves the SDK's colour alone.
+ */
+internal fun resolveLoadingColor(optionsJson: String?, findResource: (String) -> Int): Int? {
+    val name = loadingColorResourceName(optionsJson)?.takeIf { it.isNotEmpty() } ?: return null
+    val id = findResource(name)
+    if (id == 0) {
+        android.util.Log.w("SuperwallUnity", "No colour resource named '$name' for PaywallOptions.LoadingColorResourceName")
+        return null
+    }
+    return id
+}
+
+/**
+ * Whether a back press is the game's to handle. C# decides what the press does, and can only do so while Unity runs:
+ * with an in-window paywall. An activity-hosted one pauses Unity, so there the press keeps its default behaviour.
+ */
+internal fun backPressConsumedByUnity(host: com.superwall.sdk.config.options.PaywallOptions.PresentationHost): Boolean =
+    host == com.superwall.sdk.config.options.PaywallOptions.PresentationHost.IN_WINDOW
+
+/** The `KeyEvent` action for a game controller button going down or coming up. */
+internal fun gameControllerKeyAction(isPressed: Boolean): Int =
+    if (isPressed) android.view.KeyEvent.ACTION_DOWN else android.view.KeyEvent.ACTION_UP
+
+/**
+ * Reports purchases the app makes itself to the SDK. The SDK's observe calls take Google Play Billing's own objects,
+ * which C# doesn't have: the product details ([P]) are the SDK's, fetched once per product with [findProduct], and a
+ * purchase is rebuilt from its original JSON and signature. Each call waits for the one before it, so a result can't
+ * overtake the start whose product is still loading. A product the store doesn't know is not observed.
+ */
+internal class UnityPurchaseObserver<P : Any>(
+    private val isConfigured: () -> Boolean,
+    private val findProduct: suspend (String) -> P?,
+    private val onStart: (P) -> Unit,
+    private val onError: (P, Throwable) -> Unit,
+) {
+    private val lock = Mutex()
+    private val products = mutableMapOf<String, P>()
+
+    suspend fun start(productId: String) = lock.withLock {
+        if (!isConfigured()) return@withLock
+        product(productId)?.let(onStart)
+    }
+
+    suspend fun error(productId: String, message: String) = lock.withLock {
+        if (!isConfigured()) return@withLock
+        product(productId)?.let { onError(it, Throwable(message)) }
+    }
+
+    suspend fun result(report: () -> Unit) = lock.withLock {
+        if (!isConfigured()) return@withLock
+        report()
+    }
+
+    fun clear() = products.clear()
+
+    private suspend fun product(productId: String): P? {
+        products[productId]?.let { return it }
+        val found = findProduct(productId)
+        if (found == null) {
+            android.util.Log.w("SuperwallUnity", "No Google Play product details for $productId; the purchase is not observed.")
+        } else {
+            products[productId] = found
+        }
+        return found
+    }
+}
+
+/**
+ * What an embedded paywall holds and the order it lets go of it in. The SDK caches and shares paywall views ([V]), so
+ * one is torn down only when this presentation ends, once, and a view this presentation no longer has is not its to
+ * report on.
+ */
+internal class EmbeddedPaywallLifecycle<V : Any>(private val teardown: Teardown<V>) {
+    interface Teardown<V> {
+        fun cancelLoad()
+        fun removeHost()
+        fun detach(view: V)
+        fun beforeDestroy(view: V)
+        fun destroy(view: V)
+    }
+
+    var view: V? = null
+        private set
+    var isRemoved = false
+        private set
+
+    fun attach(view: V) {
+        this.view = view
+    }
+
+    fun owns(view: V): Boolean = view === this.view
+
+    fun remove() {
+        if (isRemoved) return
+        isRemoved = true
+        teardown.cancelLoad()
+        teardown.removeHost()
+        val attached = view ?: return
+        view = null
+        teardown.detach(attached)
+        teardown.beforeDestroy(attached)
+        teardown.destroy(attached)
     }
 }
 

@@ -8,7 +8,12 @@ import android.app.Activity;
 public final class UnityPlayer {
     public static Activity currentActivity;
 
+    // What the bridge sent to Unity, for the bridge tests to read.
+    public static final java.util.List<String> sentMessages =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
+
     public static void UnitySendMessage(String gameObject, String method, String message) {
+        sentMessages.add(message);
     }
 
     private UnityPlayer() {}

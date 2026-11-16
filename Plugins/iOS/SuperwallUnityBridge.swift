@@ -1412,6 +1412,15 @@ private var pendingFeatureHandlers: [String: () -> Void] = [:]
 private var pendingLocalResources: [String: URL] = [:]
 private var didConfigure = false
 
+/// What C#'s Configure completion is told once SuperwallKit calls its own: a failure only when the configuration
+/// couldn't be fetched. `pending` isn't one, as SuperwallKit may still be retrying.
+func configureCompletionResponse(status: ConfigurationStatus) -> [String: Any] {
+    if status == .failed {
+        return ["success": false, "error": "Superwall couldn't fetch its configuration."]
+    }
+    return ["success": true]
+}
+
 // MARK: - Extern C Functions
 
 @_cdecl("_SuperwallBridge_Configure")
@@ -1597,14 +1606,10 @@ public func _SuperwallBridge_Configure(
             // SuperwallKit calls this whether or not it got its configuration, and sets `configurationStatus`
             // from the main queue. Read the status after what is already queued there, so a failure is seen.
             DispatchQueue.main.async {
-                if Superwall.shared.configurationStatus == .failed {
-                    sendAsyncResponse(callbackId: cbId, data: [
-                        "success": false,
-                        "error": "Superwall couldn't fetch its configuration."
-                    ])
-                } else {
-                    sendAsyncResponse(callbackId: cbId, data: ["success": true])
-                }
+                sendAsyncResponse(
+                    callbackId: cbId,
+                    data: configureCompletionResponse(status: Superwall.shared.configurationStatus)
+                )
             }
         }
     }
@@ -1931,7 +1936,7 @@ public func _SuperwallBridge_RegisterPlacement(
     }
 }
 
-private func serializePaywallResult(_ result: PaywallResult) -> [String: Any] {
+func serializePaywallResult(_ result: PaywallResult) -> [String: Any] {
     switch result {
     // `PaywallResult.purchased` carries a `StoreProduct`, not a `String` — the old binding name
     // was misleading. Passing the object straight into the payload meant JSON serialization
@@ -2448,9 +2453,16 @@ public func _SuperwallBridge_SetGrantedEntitlements(_ entitlementsJson: UnsafePo
 /// Passes the input of every connected controller's extended gamepad to SuperwallKit, which hands it to the
 /// paywall. A gamepad has a single `valueChangedHandler`, so the one the game set is kept and still called,
 /// and put back when forwarding stops. Only used on the main thread.
-private final class UnityGameControllerForwarder {
+final class UnityGameControllerForwarder {
     private var observers: [NSObjectProtocol] = []
     private var attached: [(gamepad: GCExtendedGamepad, previous: GCExtendedGamepadValueChangedHandler?)] = []
+    private let forward: (GCExtendedGamepad, GCControllerElement) -> Void
+
+    init(forward: @escaping (GCExtendedGamepad, GCControllerElement) -> Void) {
+        self.forward = forward
+    }
+
+    var attachedGamepadCount: Int { return attached.count }
 
     func start() {
         guard observers.isEmpty else { return }
@@ -2477,20 +2489,19 @@ private final class UnityGameControllerForwarder {
         attached = []
     }
 
-    private func attach(_ controller: GCController) {
+    func attach(_ controller: GCController) {
         guard let gamepad = controller.extendedGamepad,
               !attached.contains(where: { $0.gamepad === gamepad }) else { return }
         let previous = gamepad.valueChangedHandler
+        let forward = self.forward
         attached.append((gamepad: gamepad, previous: previous))
         gamepad.valueChangedHandler = { gamepad, element in
             previous?(gamepad, element)
-            if Superwall.isInitialized {
-                Superwall.shared.gamepadValueChanged(gamepad: gamepad, element: element)
-            }
+            forward(gamepad, element)
         }
     }
 
-    private func detach(_ controller: GCController) {
+    func detach(_ controller: GCController) {
         guard let gamepad = controller.extendedGamepad,
               let index = attached.firstIndex(where: { $0.gamepad === gamepad }) else { return }
         gamepad.valueChangedHandler = attached[index].previous
@@ -2498,7 +2509,11 @@ private final class UnityGameControllerForwarder {
     }
 }
 
-private let unityGameControllerForwarder = UnityGameControllerForwarder()
+private let unityGameControllerForwarder = UnityGameControllerForwarder { gamepad, element in
+    if Superwall.isInitialized {
+        Superwall.shared.gamepadValueChanged(gamepad: gamepad, element: element)
+    }
+}
 
 @_cdecl("_SuperwallBridge_SetGameControllerForwardingEnabled")
 public func _SuperwallBridge_SetGameControllerForwardingEnabled(_ enabled: Bool) {
@@ -2513,10 +2528,49 @@ public func _SuperwallBridge_SetGameControllerForwardingEnabled(_ enabled: Bool)
 
 // MARK: - Embedded Paywall
 
+/// The frame of an embedded paywall in a container with these bounds, from a rectangle given as fractions of them.
+func embeddedPaywallFrame(normalizedRect: CGRect, in bounds: CGRect) -> CGRect {
+    return CGRect(
+        x: normalizedRect.minX * bounds.width,
+        y: normalizedRect.minY * bounds.height,
+        width: normalizedRect.width * bounds.width,
+        height: normalizedRect.height * bounds.height
+    )
+}
+
+/// What C# hears when an embedded paywall's placement shows no paywall.
+func embeddedPaywallSkipPayload(viewId: String, reason: PaywallSkippedReason) -> [String: Any] {
+    var data: [String: Any] = ["viewId": viewId]
+    switch reason {
+    case .holdout(let experiment):
+        data["reason"] = "holdout"
+        data["experiment"] = serializeExperiment(experiment)
+    case .noAudienceMatch: data["reason"] = "noAudienceMatch"
+    case .placementNotFound: data["reason"] = "placementNotFound"
+    @unknown default: data["reason"] = "noAudienceMatch"
+    }
+    return data
+}
+
+/// What C# hears when the user is done with an embedded paywall. `paywallInfo` is the paywall's, serialized.
+func embeddedPaywallFinishedPayload(
+    viewId: String,
+    paywallInfo: [String: Any],
+    result: PaywallResult,
+    shouldDismiss: Bool
+) -> [String: Any] {
+    return [
+        "viewId": viewId,
+        "paywallInfo": paywallInfo,
+        "result": serializePaywallResult(result),
+        "shouldDismiss": shouldDismiss
+    ]
+}
+
 /// Covers the game's view and lays the paywall out in the part of it C# asked for. The rectangle is in fractions of
 /// this view's size, because Unity's pixels needn't match UIKit's points, so it stays right through rotation.
 /// Touches outside the paywall go through to the game.
-private final class UnityEmbeddedPaywallContainer: UIView {
+final class UnityEmbeddedPaywallContainer: UIView {
     var normalizedRect: CGRect = .zero {
         didSet { setNeedsLayout() }
     }
@@ -2524,12 +2578,7 @@ private final class UnityEmbeddedPaywallContainer: UIView {
     weak var paywallView: UIView?
 
     private var paywallFrame: CGRect {
-        return CGRect(
-            x: normalizedRect.minX * bounds.width,
-            y: normalizedRect.minY * bounds.height,
-            width: normalizedRect.width * bounds.width,
-            height: normalizedRect.height * bounds.height
-        )
+        return embeddedPaywallFrame(normalizedRect: normalizedRect, in: bounds)
     }
 
     override func layoutSubviews() {
@@ -2594,16 +2643,10 @@ private final class UnityEmbeddedPaywall: PaywallViewControllerDelegate {
                 ])
             } catch let reason as PaywallSkippedReason {
                 guard !Task.isCancelled, !self.isRemoved else { return }
-                var data: [String: Any] = ["viewId": viewId]
-                switch reason {
-                case .holdout(let experiment):
-                    data["reason"] = "holdout"
-                    data["experiment"] = serializeExperiment(experiment)
-                case .noAudienceMatch: data["reason"] = "noAudienceMatch"
-                case .placementNotFound: data["reason"] = "placementNotFound"
-                @unknown default: data["reason"] = "noAudienceMatch"
-                }
-                sendToUnity(method: "embeddedPaywallOnSkip", data: data)
+                sendToUnity(
+                    method: "embeddedPaywallOnSkip",
+                    data: embeddedPaywallSkipPayload(viewId: viewId, reason: reason)
+                )
             } catch is CancellationError {
                 // Removed while loading.
             } catch {
@@ -2671,12 +2714,12 @@ private final class UnityEmbeddedPaywall: PaywallViewControllerDelegate {
             unityEmbeddedPaywalls[viewId] = nil
             remove()
         }
-        sendToUnity(method: "embeddedPaywallOnFinished", data: [
-            "viewId": viewId,
-            "paywallInfo": info,
-            "result": serializePaywallResult(result),
-            "shouldDismiss": shouldDismiss
-        ])
+        sendToUnity(method: "embeddedPaywallOnFinished", data: embeddedPaywallFinishedPayload(
+            viewId: viewId,
+            paywallInfo: info,
+            result: result,
+            shouldDismiss: shouldDismiss
+        ))
     }
 }
 

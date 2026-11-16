@@ -56,25 +56,26 @@ namespace Superwall
             if (completion != null)
             {
                 completionCallbackId = Guid.NewGuid().ToString();
-                BridgeCallbackHandler.Instance.RegisterAsyncCallback(completionCallbackId, (json) =>
-                {
-                    var data = Json.Deserialize(json) as Dictionary<string, object>;
-                    if (data != null && data.ContainsKey("success") && (bool)data["success"])
-                    {
-                        completion(ConfigurationResult.Success());
-                    }
-                    else
-                    {
-                        string error = data != null && data.ContainsKey("error") ? data["error"] as string : "Unknown error";
-                        completion(ConfigurationResult.Failed(error));
-                    }
-                });
+                BridgeCallbackHandler.Instance.RegisterAsyncCallback(completionCallbackId,
+                    (json) => completion(ParseConfigurationResult(json)));
             }
 
             CallNative_Configure(apiKey, optionsJson, hasPurchaseController, completionCallbackId);
             // Tags this app's events and device attributes as coming from the Unity SDK, as the other wrappers do.
             CallNative_SetPlatformWrapper(PlatformWrapper, PackageVersion);
             return _shared;
+        }
+
+        // What both bridges answer Configure with: {success: true}, or {success: false, error}.
+        internal static ConfigurationResult ParseConfigurationResult(string json)
+        {
+            var data = Json.Deserialize(json ?? "") as Dictionary<string, object>;
+            if (data != null && data.ContainsKey("success") && data["success"] is bool success && success)
+            {
+                return ConfigurationResult.Success();
+            }
+            string error = data != null && data.ContainsKey("error") ? data["error"] as string : null;
+            return ConfigurationResult.Failed(error ?? "Unknown error");
         }
 
         public void SetDelegate(ISuperwallDelegate superwallDelegate)
@@ -1042,18 +1043,30 @@ namespace Superwall
 
         /// <summary>
         /// Android only. Resets the SDK and removes its instance, so that <see cref="Configure"/> can be called again,
-        /// for example with another API key. <see cref="Shared"/> is null afterwards, and the delegate, purchase
-        /// controller and pending completions are let go. SuperwallKit can't be torn down, so on iOS this does nothing
+        /// for example with another API key. <see cref="Shared"/> is null afterwards, the delegate, purchase
+        /// controller and pending completions are let go, and embedded paywalls are taken off the screen. SuperwallKit can't be torn down, so on iOS this does nothing
         /// and returns false.
         /// </summary>
         /// <returns>Whether the SDK was torn down.</returns>
         public static bool Teardown()
         {
             if (!CallNative_Teardown()) return false;
-            _shared = null;
-            BridgeCallbackHandler.Instance?.Clear();
+            ResetAfterTeardown();
             return true;
         }
+
+        // The C# half of a teardown: nothing registered for the old native instance may reach the next one.
+        internal static void ResetAfterTeardown()
+        {
+            _shared = null;
+            BridgeCallbackHandler.Instance?.Clear();
+        }
+
+        /// <summary>
+        /// Hears the embedded paywall calls made where there is no native SDK to take them (the Editor): the call's
+        /// name, the view's ID and, for a call that places the view, its rectangle as fractions of the screen.
+        /// </summary>
+        internal static Action<string, string, float[]> EmbeddedPaywallCallsWithoutNative;
 
         // ============= Deserialization Helpers =============
 
@@ -2162,6 +2175,7 @@ namespace Superwall
             SuperwallBridgeAndroid.ShowEmbeddedPaywall(viewId, placement, paramsJson, x, y, width, height);
 #else
             Debug.Log($"[Superwall] ShowEmbeddedPaywall({placement})");
+            EmbeddedPaywallCallsWithoutNative?.Invoke("show", viewId, new[] { x, y, width, height });
             SimulateWithoutNative("embeddedPaywallOnError", ("viewId", viewId), ("error", NoNativeSdkMessage));
 #endif
         }
@@ -2172,6 +2186,8 @@ namespace Superwall
             SuperwallBridgeiOS._SuperwallBridge_SetEmbeddedPaywallRect(viewId, x, y, width, height);
 #elif UNITY_ANDROID && !UNITY_EDITOR
             SuperwallBridgeAndroid.SetEmbeddedPaywallRect(viewId, x, y, width, height);
+#else
+            EmbeddedPaywallCallsWithoutNative?.Invoke("setRect", viewId, new[] { x, y, width, height });
 #endif
         }
 
@@ -2181,6 +2197,8 @@ namespace Superwall
             SuperwallBridgeiOS._SuperwallBridge_RemoveEmbeddedPaywall(viewId);
 #elif UNITY_ANDROID && !UNITY_EDITOR
             SuperwallBridgeAndroid.RemoveEmbeddedPaywall(viewId);
+#else
+            EmbeddedPaywallCallsWithoutNative?.Invoke("remove", viewId, null);
 #endif
         }
 
