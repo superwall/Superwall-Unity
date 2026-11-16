@@ -225,4 +225,36 @@ final class UnityGameControllerForwarderTests: XCTestCase {
         XCTAssertNil(gamepad.valueChangedHandler)
         XCTAssertEqual(forwarder.attachedGamepadCount, 0)
     }
+
+    func testAHandlerTheGameSetsLaterIsLeftAloneWhenForwardingStops() throws {
+        let (controller, gamepad) = try makeGamepad()
+        gamepad.valueChangedHandler = nil
+        let forwarder = makeForwarder()
+        forwarder.attach(controller)
+
+        // The game's input code takes the gamepad over after forwarding started, e.g. from its own connect observer.
+        var gameHeard = 0
+        gamepad.valueChangedHandler = { _, _ in gameHeard += 1 }
+        forwarder.stop()
+        gamepad.valueChangedHandler?(gamepad, gamepad.buttonY)
+
+        XCTAssertEqual(gameHeard, 1, "stopping must not put back the handler from before the game set its own")
+        XCTAssertTrue(forwarded.isEmpty)
+        XCTAssertEqual(forwarder.attachedGamepadCount, 0)
+    }
+
+    func testAHandlerTheGameSetsLaterIsLeftAloneWhenTheControllerDisconnects() throws {
+        let (controller, gamepad) = try makeGamepad()
+        gamepad.valueChangedHandler = nil
+        let forwarder = makeForwarder()
+        forwarder.attach(controller)
+
+        var gameHeard = 0
+        gamepad.valueChangedHandler = { _, _ in gameHeard += 1 }
+        forwarder.detach(controller)
+        gamepad.valueChangedHandler?(gamepad, gamepad.buttonY)
+
+        XCTAssertEqual(gameHeard, 1)
+        XCTAssertEqual(forwarder.attachedGamepadCount, 0)
+    }
 }

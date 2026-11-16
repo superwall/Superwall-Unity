@@ -2451,11 +2451,29 @@ public func _SuperwallBridge_SetGrantedEntitlements(_ entitlementsJson: UnsafePo
 // MARK: - Game Controller
 
 /// Passes the input of every connected controller's extended gamepad to SuperwallKit, which hands it to the
-/// paywall. A gamepad has a single `valueChangedHandler`, so the one the game set is kept and still called,
-/// and put back when forwarding stops. Only used on the main thread.
+/// paywall. A gamepad has a single `valueChangedHandler`, so the one the game had set is kept and still called,
+/// and put back when forwarding stops. A handler the game sets after that replaces forwarding on that gamepad, and
+/// is left alone when forwarding stops. Only used on the main thread.
 final class UnityGameControllerForwarder {
+    /// The handler is read and written through KVC, which hands over the block object itself: reading it through the
+    /// Swift property gives a new closure each time, so it couldn't be told apart from one the game installed.
+    private static let handlerKey = "valueChangedHandler"
+
+    /// Whether a handler the forwarder installed still forwards. It is turned off when the gamepad is let go, so a
+    /// handler that is somehow still installed afterwards only calls the game's.
+    private final class Forwarding {
+        var isOn = true
+    }
+
+    private struct Attachment {
+        let gamepad: GCExtendedGamepad
+        let previous: GCExtendedGamepadValueChangedHandler?
+        let handler: AnyObject
+        let forwarding: Forwarding
+    }
+
     private var observers: [NSObjectProtocol] = []
-    private var attached: [(gamepad: GCExtendedGamepad, previous: GCExtendedGamepadValueChangedHandler?)] = []
+    private var attached: [Attachment] = []
     private let forward: (GCExtendedGamepad, GCControllerElement) -> Void
 
     init(forward: @escaping (GCExtendedGamepad, GCControllerElement) -> Void) {
@@ -2483,9 +2501,7 @@ final class UnityGameControllerForwarder {
     func stop() {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers = []
-        for entry in attached {
-            entry.gamepad.valueChangedHandler = entry.previous
-        }
+        attached.forEach { release($0) }
         attached = []
     }
 
@@ -2494,18 +2510,30 @@ final class UnityGameControllerForwarder {
               !attached.contains(where: { $0.gamepad === gamepad }) else { return }
         let previous = gamepad.valueChangedHandler
         let forward = self.forward
-        attached.append((gamepad: gamepad, previous: previous))
-        gamepad.valueChangedHandler = { gamepad, element in
+        let forwarding = Forwarding()
+        let block: @convention(block) (GCExtendedGamepad, GCControllerElement) -> Void = { gamepad, element in
             previous?(gamepad, element)
-            forward(gamepad, element)
+            if forwarding.isOn {
+                forward(gamepad, element)
+            }
         }
+        let handler = block as AnyObject
+        attached.append(Attachment(gamepad: gamepad, previous: previous, handler: handler, forwarding: forwarding))
+        gamepad.setValue(handler, forKey: Self.handlerKey)
     }
 
     func detach(_ controller: GCController) {
         guard let gamepad = controller.extendedGamepad,
               let index = attached.firstIndex(where: { $0.gamepad === gamepad }) else { return }
-        gamepad.valueChangedHandler = attached[index].previous
-        attached.remove(at: index)
+        release(attached.remove(at: index))
+    }
+
+    /// Puts the game's earlier handler back, unless the game has since installed another one: that one is the
+    /// game's now and stays.
+    private func release(_ entry: Attachment) {
+        entry.forwarding.isOn = false
+        guard (entry.gamepad.value(forKey: Self.handlerKey) as AnyObject?) === entry.handler else { return }
+        entry.gamepad.valueChangedHandler = entry.previous
     }
 }
 
