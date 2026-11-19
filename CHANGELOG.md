@@ -75,6 +75,9 @@ All notable changes to this package will be documented in this file.
 * Android: dates in `StoreTransaction` and `StoreProduct.TrialPeriodEndDate` could come out garbled when two were formatted at once on different threads, such as a transaction event during a `GetProducts` call.
 * In the Editor, and on platforms other than iOS and Android, no completion ever ran and each call left one registered: `Configure`, `RegisterPlacement`'s `feature` block, `GetProducts`, `Purchase`, `RestorePurchases`, `GetCustomerInfo`, `GetPresentationResult`, `GetAssignments`, `ConfirmAllAssignments`, `GetDeviceAttributes`, `Consume`, `ShowAlert` and the Customer Center calls. They now complete on the next frame; see the behaviour changes.
 
+* Android: with an `IPurchaseController`, a restore started while Unity is paused (from the Customer Center, or a paywall shown with `AndroidPaywallPresentation.Activity`) waited on its spinner until the screen was closed, because the controller can't run then. It now fails straight away.
+* The package's runtime tests didn't compile in Unity: they use internal members that only the CI harness, which compiles everything as one assembly, could see. The runtime assembly now grants `Superwall.Tests` access. `CustomCallbackTests` also failed in Unity, where one fixture instance runs every test, because replies from earlier tests were still counted.
+
 ### Behaviour changes
 * Entitlements, transactions and products of a custom store now arrive with `ProductStore.Custom`. Before, they arrived as `ProductStore.Other`.
 * Android: a paywall skipped because the user is subscribed now reaches `PaywallPresentationHandler.OnSkip` as `PaywallSkippedReason.UserIsSubscribed`. Before, it arrived as `NoAudienceMatch`.

@@ -203,6 +203,33 @@ internal class UnityCustomerCenterPresentations {
     fun clear(): String? = presentedId.also { presentedId = null }
 }
 
+/**
+ * Whether Unity's activity is paused, which stops its player loop: a message sent to C# then waits until the
+ * activity resumes. It is paused while a screen in its own activity is on top, such as the Customer Center or a
+ * paywall presented with `AndroidPaywallPresentation.Activity`.
+ */
+internal class UnityActivityPauseTracker(
+    private val unityActivity: () -> Activity?
+) : android.app.Application.ActivityLifecycleCallbacks {
+    @Volatile
+    var isUnityPaused = false
+        private set
+
+    override fun onActivityPaused(activity: Activity) {
+        if (activity === unityActivity()) isUnityPaused = true
+    }
+
+    override fun onActivityResumed(activity: Activity) {
+        if (activity === unityActivity()) isUnityPaused = false
+    }
+
+    override fun onActivityCreated(activity: Activity, savedInstanceState: android.os.Bundle?) {}
+    override fun onActivityStarted(activity: Activity) {}
+    override fun onActivityStopped(activity: Activity) {}
+    override fun onActivitySaveInstanceState(activity: Activity, outState: android.os.Bundle) {}
+    override fun onActivityDestroyed(activity: Activity) {}
+}
+
 @Suppress("unused")
 class SuperwallUnityBridge {
 
@@ -212,6 +239,8 @@ class SuperwallUnityBridge {
         private var latestIntegrationAttributes: Map<AttributionProvider, String>? = null
         private val customCallbacks = UnityCustomCallbacks { method, data -> sendToUnity(method, data) }
         private val customerCenters = UnityCustomerCenterPresentations()
+        private val unityPause = UnityActivityPauseTracker { UnityPlayer.currentActivity }
+        private var unityPauseRegistered = false
         private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
         private const val TAG = "SuperwallUnity"
@@ -260,6 +289,12 @@ class SuperwallUnityBridge {
         // The SDK takes a colour resource, so C# names one and it's looked up in the app's resources.
         resolveLoadingColor(optionsJson) { name -> activity.resources.getIdentifier(name, "color", activity.packageName) }
             ?.let { options.paywalls.loadingColor = it }
+
+        // C# is calling, so Unity's activity is running now; from here on its pauses are tracked.
+        if (!unityPauseRegistered) {
+            activity.application?.registerActivityLifecycleCallbacks(unityPause)
+            unityPauseRegistered = true
+        }
 
         val unityActivityProvider = object : com.superwall.sdk.misc.ActivityProvider {
             override fun getCurrentActivity(): Activity? = UnityPlayer.currentActivity
@@ -2402,6 +2437,14 @@ class SuperwallUnityBridge {
         }
 
         override suspend fun restorePurchases(): RestorationResult {
+            // The request would sit unanswered until Unity resumes, leaving the screen that asked on its spinner.
+            if (unityPause.isUnityPaused) {
+                val message = "Unity is paused while this screen is open, so the purchase controller can't restore. " +
+                    "This happens in the Customer Center and in paywalls shown with AndroidPaywallPresentation.Activity."
+                android.util.Log.e(TAG, "Restore failed: $message")
+                return RestorationResult.Failed(Throwable(message))
+            }
+
             val callbackId = java.util.UUID.randomUUID().toString()
             val deferred = CompletableDeferred<RestorationResult>()
             pendingRestores[callbackId] = deferred

@@ -342,7 +342,7 @@ class MyCustomerCenterDelegate : ICustomerCenterDelegate
 }
 ```
 
-Set the configuration once with `SuperwallOptions.CustomerCenter` to use it whenever `PresentCustomerCenter` isn't given one. `ICustomerCenterDelegate.ShouldRestorePurchases` is only called on iOS: on Android the Customer Center opens in its own activity, which pauses Unity, so restores go ahead without asking.
+Set the configuration once with `SuperwallOptions.CustomerCenter` to use it whenever `PresentCustomerCenter` isn't given one. `ICustomerCenterDelegate.ShouldRestorePurchases` is only called on iOS: on Android the Customer Center opens in its own activity, which pauses Unity, so restores go ahead without asking. For the same reason, with an `IPurchaseController` a restore started from the Customer Center on Android can't reach your controller: it fails straight away and the Customer Center reports that no purchases were found. Offer restore from your own UI or a paywall in that case.
 
 ## User Identity
 
