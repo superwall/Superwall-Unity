@@ -41,6 +41,7 @@ namespace Superwall.Tests
         [SetUp]
         public void SetUp()
         {
+            _replies.Clear();
             BridgeCallbackHandler.Initialize();
             Application.logMessageReceived += CaptureReply;
         }
