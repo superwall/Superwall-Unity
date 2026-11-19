@@ -600,18 +600,23 @@ class SuperwallUnityBridge {
         onError = { product, error -> Superwall.instance.observePurchaseError(product, error) },
     )
 
+    // The session is read here, when Unity makes the call, not when the queued work runs: by then a teardown may
+    // have ended it.
     fun observePurchaseStart(productId: String) {
-        scope.launch { purchaseObserver.start(productId) }
+        val session = purchaseObserver.session()
+        scope.launch { purchaseObserver.start(productId, session) }
     }
 
     fun observePurchaseError(productId: String, error: String) {
-        scope.launch { purchaseObserver.error(productId, error) }
+        val session = purchaseObserver.session()
+        scope.launch { purchaseObserver.error(productId, error, session) }
     }
 
     fun observePurchaseResult(billingResponseCode: Int, debugMessage: String, purchasesJson: String) {
         val purchases = parseObservedPurchases(purchasesJson)
+        val session = purchaseObserver.session()
         scope.launch {
-            purchaseObserver.result {
+            purchaseObserver.result(session) {
                 val result = BillingResult.newBuilder()
                     .setResponseCode(billingResponseCode)
                     .setDebugMessage(debugMessage)
@@ -853,6 +858,9 @@ class SuperwallUnityBridge {
         unityDelegate = null
         unityPurchaseController = null
         latestIntegrationAttributes = null
+        // At once, on Unity's thread: observer calls already queued, or waiting on a product lookup, belong to the
+        // instance that is gone and must not be reported to the next one.
+        purchaseObserver.endSession()
         scope.launch {
             purchaseObserver.clear()
             val embedded = embeddedPaywalls.values.toList()
@@ -2508,6 +2516,10 @@ internal fun gameControllerKeyAction(isPressed: Boolean): Int =
  * which C# doesn't have: the product details ([P]) are the SDK's, fetched once per product with [findProduct], and a
  * purchase is rebuilt from its original JSON and signature. Each call waits for the one before it, so a result can't
  * overtake the start whose product is still loading. A product the store doesn't know is not observed.
+ *
+ * Calls are queued and a product lookup can take a while, so a teardown can happen in between. Each call carries the
+ * [session] it was made in, and one whose session has ended ([endSession]) is dropped: it neither reports to the next
+ * SDK instance nor leaves the old instance's product details in the cache.
  */
 internal class UnityPurchaseObserver<P : Any>(
     private val isConfigured: () -> Boolean,
@@ -2517,27 +2529,40 @@ internal class UnityPurchaseObserver<P : Any>(
 ) {
     private val lock = Mutex()
     private val products = mutableMapOf<String, P>()
+    private val currentSession = java.util.concurrent.atomic.AtomicInteger()
 
-    suspend fun start(productId: String) = lock.withLock {
-        if (!isConfigured()) return@withLock
-        product(productId)?.let(onStart)
+    /** The session a call belongs to. Read it when the call is made, before queuing it. */
+    fun session(): Int = currentSession.get()
+
+    /** Ends the session: calls made in it that haven't reported yet never will. Safe from any thread. */
+    fun endSession() {
+        currentSession.incrementAndGet()
     }
 
-    suspend fun error(productId: String, message: String) = lock.withLock {
-        if (!isConfigured()) return@withLock
-        product(productId)?.let { onError(it, Throwable(message)) }
+    private fun isCurrent(session: Int) = session == currentSession.get() && isConfigured()
+
+    suspend fun start(productId: String, session: Int = session()) = lock.withLock {
+        if (!isCurrent(session)) return@withLock
+        product(productId, session)?.let(onStart)
     }
 
-    suspend fun result(report: () -> Unit) = lock.withLock {
-        if (!isConfigured()) return@withLock
+    suspend fun error(productId: String, message: String, session: Int = session()) = lock.withLock {
+        if (!isCurrent(session)) return@withLock
+        product(productId, session)?.let { onError(it, Throwable(message)) }
+    }
+
+    suspend fun result(session: Int = session(), report: () -> Unit) = lock.withLock {
+        if (!isCurrent(session)) return@withLock
         report()
     }
 
     fun clear() = products.clear()
 
-    private suspend fun product(productId: String): P? {
+    private suspend fun product(productId: String, session: Int): P? {
         products[productId]?.let { return it }
         val found = findProduct(productId)
+        // The lookup can outlive the instance it was made for.
+        if (!isCurrent(session)) return null
         if (found == null) {
             android.util.Log.w("SuperwallUnity", "No Google Play product details for $productId; the purchase is not observed.")
         } else {

@@ -312,6 +312,33 @@ class BridgeLogicTest {
     }
 
     @Test
+    fun observedPurchase_stillLookingUpItsProductAtTeardown_isNotReportedToTheNextInstance() = runTest {
+        val observed = Observed()
+        val gate = CompletableDeferred<Unit>()
+        observed.gate = gate
+
+        // Made before the teardown: one waiting on its product, two queued behind it.
+        val session = observed.observer.session()
+        val start = launch { observed.observer.start("pro", session) }
+        val error = launch { observed.observer.error("pro", "Card declined", session) }
+        val result = launch { observed.observer.result(session) { observed.events += "result" } }
+        testScheduler.runCurrent()
+
+        // Teardown, then the next instance is configured and the old lookup comes back.
+        observed.observer.endSession()
+        observed.observer.clear()
+        gate.complete(Unit)
+        start.join(); error.join(); result.join()
+        assertTrue(observed.events.isEmpty())
+
+        // The old instance's product details weren't kept: the next instance looks the product up itself.
+        observed.gate = null
+        observed.observer.start("pro")
+        assertEquals(listOf("start details:pro"), observed.events)
+        assertEquals(listOf("pro", "pro"), observed.lookups)
+    }
+
+    @Test
     fun observedPurchase_ofAProductTheStoreDoesNotKnow_isNotObserved_andIsLookedUpAgain() = runTest {
         val observed = Observed()
         observed.observer.start("missing")
