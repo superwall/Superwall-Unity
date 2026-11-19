@@ -7,7 +7,7 @@ This package provides a Unity C# wrapper around the native [SuperwallKit](https:
 ## Requirements
 
 - Unity 6+ (6000.3+)
-- iOS 16.0+
+- iOS 15.0+
 - Android minSdk 25+, compileSdk 35+ (set **Target API Level** to 35 or higher in Player Settings)
 
 ## Installation
@@ -52,7 +52,8 @@ Superwall.Shared.Identify("user_123");
 ```csharp
 var options = new SuperwallOptions
 {
-    // Network environment (Release, ReleaseCandidate, Developer)
+    // Network environment (Release, ReleaseCandidate, Developer, Local on iOS, or Custom with
+    // CustomNetworkEnvironment). Leave it at Release unless the Superwall team tells you otherwise.
     NetworkEnvironment = NetworkEnvironment.Release,
 
     // Test mode (Automatic, WhenEnabledForUser, Never, Always)
@@ -60,6 +61,12 @@ var options = new SuperwallOptions
 
     // Logging
     Logging = new Logging { Level = LogLevel.Debug },
+
+    // Which events are sent to Superwall (All, SuperwallOnly, None). Null keeps the default, All.
+    EventTrackingBehavior = EventTrackingBehavior.All,
+
+    // Ad consent from your consent flow. Null leaves it to an IAB TCF banner, or granted.
+    AdConsent = new AdConsent { AdUserData = AdConsentStatus.Granted, AdPersonalization = AdConsentStatus.Denied },
 
     // Paywall behavior
     Paywalls = new PaywallOptions
@@ -76,6 +83,25 @@ var options = new SuperwallOptions
     }
 };
 ```
+
+Options for one platform do nothing on the other:
+
+| Option | Platform | What it does |
+|--------|----------|--------------|
+| `DevServer` | iOS | Connects to a running `superwall dev` server: `DevServer.Default` from a simulator, `DevServer.At(url)` from a device. Development builds only |
+| `StoreKitVersion` | iOS | StoreKit 1 or 2 |
+| `Paywalls.NotificationPermissionsDenied` | iOS | The alert shown when notification permission is denied |
+| `Paywalls.ShouldShowWebPurchaseConfirmationAlert` | iOS | Confirms a purchase made on the web |
+| `PassIdentifiersToPlayStore` | Android | Passes the user ID to Google Play unhashed |
+| `Paywalls.AndroidPresentation` | Android | In the game's window (default) or in its own activity |
+| `Paywalls.OptimisticLoading` | Android | Shows the paywall before its products have loaded |
+| `Paywalls.PreloadDeviceOverrides` | Android | Turns preloading on or off per `DeviceTier` |
+| `Paywalls.LoadingColorResourceName` | Android | The loading spinner's colour, as the name of a colour resource in the app. The Android SDK takes a resource, not a hex value |
+| `Paywalls.OnBackPressed` | Android | Called on a back press for paywalls with "Reroute back button" on. While set, the press doesn't dismiss the paywall; call `Dismiss()` yourself |
+
+### In the Editor
+
+There is no native SDK in the Editor or on platforms other than iOS and Android. Calls log what they would do, getters return defaults, and completions run on the next frame: `Configure` reports success, `RegisterPlacement` runs its `feature` block (as when a paywall is skipped), and purchases, restores and `GetProducts` report that there's no native SDK. No paywall is shown.
 
 ## Registering Placements
 
@@ -101,7 +127,9 @@ var handler = new PaywallPresentationHandler
     OnPresent = (info) => Debug.Log($"Paywall shown: {info.Identifier}"),
     OnDismiss = (info, result) => Debug.Log($"Paywall dismissed: {result.Type}"),
     OnError = (error) => Debug.LogError($"Paywall error: {error}"),
-    OnSkip = (reason) => Debug.Log($"Paywall skipped: {reason}")
+    OnSkip = (reason) => Debug.Log($"Paywall skipped: {reason}"),
+    // Like OnSkip, with the experiment when the reason is Holdout
+    OnSkipWithExperiment = (reason, experiment) => Debug.Log($"Skipped: {reason} {experiment?.Id}")
 };
 
 Superwall.Shared.RegisterPlacement("upgrade", handler: handler, feature: () =>
@@ -145,7 +173,7 @@ The result picks the paywall's onSuccess or onFailure branch, and `Data` is read
 
 ## Delegate
 
-Implement `ISuperwallDelegate` to receive SDK lifecycle events:
+Implement `ISuperwallDelegate` to receive SDK lifecycle events. Every method has a default implementation that does nothing, so implement only the ones you need:
 
 ```csharp
 public class MySuperwallHandler : MonoBehaviour, ISuperwallDelegate
@@ -165,23 +193,46 @@ public class MySuperwallHandler : MonoBehaviour, ISuperwallDelegate
         Debug.Log($"Event: {eventInfo.EventType}");
     }
 
-    public void HandleCustomPaywallAction(string name) { }
-    public void WillPresentPaywall(PaywallInfo info) { }
-    public void DidPresentPaywall(PaywallInfo info) { }
-    public void WillDismissPaywall(PaywallInfo info) { }
-    public void DidDismissPaywall(PaywallInfo info) { }
-    public void PaywallWillOpenURL(string url) { }
-    public void PaywallWillOpenDeepLink(string url) { }
-    public void HandleLog(string level, string scope, string message,
-        Dictionary<string, object> info, string error) { }
-    public void WillRedeemLink() { }
-    public void DidRedeemLink(RedemptionResult result) { }
-    public void HandleSuperwallDeepLink(string fullURL, List<string> pathComponents,
-        Dictionary<string, string> queryParameters) { }
-    public void CustomerInfoDidChange(CustomerInfo from, CustomerInfo to) { }
-    public void UserAttributesDidChange(Dictionary<string, object> newAttributes) { }
+    // Also available: HandleCustomPaywallAction, WillPresentPaywall, DidPresentPaywall, WillDismissPaywall,
+    // DidDismissPaywall, PaywallWillOpenURL, PaywallWillOpenDeepLink, HandleLog, WillRedeemLink, DidRedeemLink,
+    // CustomerInfoDidChange, UserAttributesDidChange, and HandleSuperwallDeepLink (iOS only: the Android SDK has
+    // no such callback, so it is never called there).
 }
 ```
+
+`SuperwallEventInfo` carries each event's values as typed fields: `PaywallInfo`, `Product`, `Transaction`, `Result`, and for specific events `AttributionMatchInfo`, `PageViewData`, `TransactionProduct`, `StatusReason` and others. A field that an event doesn't have is null.
+
+## Embedded Paywalls
+
+`RegisterPlacement` presents a paywall over the whole screen. To show one inside part of your game's screen instead, use `ShowEmbeddedPaywall`, which lays a native view over Unity's:
+
+```csharp
+// A rectangle in Unity's screen space: pixels, with the origin at the bottom left.
+var rect = new Rect(0, 0, Screen.width, Screen.height * 0.4f);
+
+EmbeddedPaywall paywall = Superwall.Shared.ShowEmbeddedPaywall("shop_banner", rect, handler: new EmbeddedPaywallHandler
+{
+    OnPresent = info => Debug.Log($"Showing {info.Name}"),
+    OnSkip = (reason, experiment) => Debug.Log($"Not shown: {reason}"),
+    OnError = error => Debug.LogError(error),
+    OnFinished = (info, result, shouldDismiss) =>
+    {
+        // shouldDismiss: the paywall has been taken off the screen already.
+        if (result.Type == PaywallResult.ResultType.Purchased) UnlockShop();
+    }
+});
+
+paywall.SetRect(newRect); // move or resize it
+paywall.Remove();         // take it away
+```
+
+Things to know:
+
+- The paywall is a native view, so it is drawn above everything Unity renders, including UI that overlaps its rectangle.
+- The rectangle keeps its share of the screen when the screen rotates. Call `SetRect` when your layout changes.
+- Whether a paywall is shown follows the placement's audiences, as with `RegisterPlacement`. The presentation style set on the dashboard doesn't apply.
+- Show each placement in one embedded paywall at a time.
+- `EmbeddedPaywallHandler.OnCustomCallback` is iOS only: the Android SDK has no custom callbacks for embedded paywalls.
 
 ## Purchase Controller
 
@@ -270,6 +321,29 @@ For custom products its `OldProductId` comes from the active entitlements you re
 `OldPurchaseToken` is null. Implementing `PurchaseCustomProduct` is optional: by default it fails
 the purchase.
 
+## Customer Center
+
+The Customer Center is a screen where users view and manage their subscriptions, request refunds, restore purchases and contact support.
+
+```csharp
+var configuration = CustomerCenterConfiguration.Default;
+configuration.Support.Email = "support@example.com";
+configuration.ManagementScreen.Paths.Add(CustomerCenterPath.ForUrl("https://example.com/faq", "FAQ"));
+
+Superwall.Shared.PresentCustomerCenter(configuration, new MyCustomerCenterDelegate(), onDismiss: () => { });
+
+class MyCustomerCenterDelegate : ICustomerCenterDelegate
+{
+    // Every method is optional.
+    public void DidSelectAction(CustomerCenterAction action, string pathId, CustomerCenterPurchase purchase)
+    {
+        if (action.Type == CustomerCenterActionType.Custom) { /* action.Identifier */ }
+    }
+}
+```
+
+Set the configuration once with `SuperwallOptions.CustomerCenter` to use it whenever `PresentCustomerCenter` isn't given one. `ICustomerCenterDelegate.ShouldRestorePurchases` is only called on iOS: on Android the Customer Center opens in its own activity, which pauses Unity, so restores go ahead without asking. For the same reason, with an `IPurchaseController` a restore started from the Customer Center on Android can't reach your controller: it fails straight away and the Customer Center reports that no purchases were found. Offer restore from your own UI or a paywall in that case.
+
 ## User Identity
 
 ```csharp
@@ -346,13 +420,51 @@ Superwall.Shared.GetProducts(new List<string> { "monthly", "annual" }, (products
 Superwall.Shared.PreloadAllPaywalls();
 Superwall.Shared.PreloadPaywallsForPlacements(new List<string> { "onboarding", "upgrade" });
 
-// Deep links
-Superwall.Shared.HandleDeepLink("https://example.com/link");
+// Deep links. The static overload also works before Configure, for a link that launched the app.
+Superwall.HandleDeepLink(new Uri("https://example.com/link"));
 
-// Dismiss current paywall
+// Event tracking and ad consent, for example after the user answers your consent prompt
+Superwall.Shared.EventTrackingBehavior = EventTrackingBehavior.None;
+Superwall.Shared.AdConsent = new AdConsent { AdUserData = AdConsentStatus.Denied, AdPersonalization = AdConsentStatus.Denied };
+
+// Paywalls in dark mode, or null to follow the system
+Superwall.Shared.SetInterfaceStyle(InterfaceStyle.Dark);
+
+// Cancel the local notifications Superwall scheduled (free trial reminders)
+Superwall.Shared.CancelAllScheduledNotifications();
+
+// Push notifications through Superwall (Android only; they do nothing on iOS)
+Superwall.Shared.SetPushToken(fcmToken);
+Superwall.Shared.HandleNotificationOpen(remoteMessageData);
+
+// Dismiss current paywall, optionally hearing when it's gone
 Superwall.Shared.Dismiss();
+Superwall.Shared.Dismiss(() => Debug.Log("Dismissed"));
 
-// Show alert on current paywall
+// Entitlements a product unlocks
+List<Entitlement> unlocked = Superwall.Shared.GetEntitlementsByProductId("pro_monthly");
+
+// Entitlements your own backend granted, merged into the subscription status (iOS only)
+Superwall.Shared.GrantedEntitlements = new List<Entitlement> { new Entitlement { Id = "pro" } };
+
+// Game controllers. Needs SuperwallOptions.IsGameControllerEnabled.
+Superwall.Shared.SetGameControllerForwardingEnabled(true);          // iOS: forwards every connected controller
+Superwall.Shared.DispatchGameControllerKeyEvent(96, isPressed: true); // Android: KEYCODE_BUTTON_A
+Superwall.Shared.DispatchGameControllerMotionEvent(x, y);            // Android: a thumbstick
+
+// Android only (they do nothing on iOS)
+Superwall.Shared.OpenRestoreOnWeb();                  // the web page for restoring web purchases
+string accountId = Superwall.Shared.ExternalAccountId; // what the SDK passes Google Play as the account ID
+Superwall.Shared.DismissForNextPaywall();
+Superwall.Teardown();                                 // remove the SDK instance, so Configure can run again
+
+// Android only: report purchases you make yourself, with SuperwallOptions.ShouldObservePurchases on
+Superwall.Shared.ObservePurchaseStart("pro_monthly");
+Superwall.Shared.ObservePurchaseResult(billingResponseCode: 0,
+    purchases: new List<GooglePlayPurchase> { new GooglePlayPurchase(originalJson, signature) });
+Superwall.Shared.ObservePurchaseError("pro_monthly", "Card declined");
+
+// Show alert on current paywall (Android only; on iOS it does nothing and calls onClose straight away)
 Superwall.Shared.ShowAlert(title: "Hey!", message: "Check this out");
 
 // Force refresh config
@@ -386,21 +498,42 @@ Superwall.Shared.LocaleIdentifier = "en_US";
 | `SetUserAttributes(dict)` | Set user attributes |
 | `GetUserAttributes()` | Get user attributes |
 | `PreloadAllPaywalls()` | Preload all paywalls |
-| `HandleDeepLink(url)` | Handle a deep link |
-| `Dismiss()` | Dismiss current paywall |
+| `HandleDeepLink(Uri)` | Handle a deep link (static, works before `Configure`) |
+| `HandleDeepLink(url)` | Handle a deep link (needs `Configure` first) |
+| `EventTrackingBehavior` | Get/set which events are sent to Superwall |
+| `AdConsent` | Get/set the user's ad consent |
+| `IntegrationAttributes` | The integration attributes set |
+| `SetInterfaceStyle(style)` | Show paywalls in light or dark mode, or `null` for the system setting |
+| `CancelAllScheduledNotifications()` | Cancel Superwall's scheduled local notifications |
+| `SetPushToken(token)`, `OptOutOfNotifications()`, `OptInToNotifications()`, `HandleNotificationOpen(data)` | Push notifications through Superwall (Android only) |
+| `Dismiss()`, `Dismiss(completion)` | Dismiss current paywall |
+| `DismissForNextPaywall(completion?)` | Dismiss the paywall to present another (Android only) |
+| `ShowEmbeddedPaywall(placement, screenRect, params?, handler?)` | Show a paywall inside part of the screen |
+| `GetEntitlementsByProductIds(ids)`, `GetEntitlementsByProductId(id)` | The entitlements products unlock |
+| `GrantedEntitlements` | Get/set entitlements your backend granted (iOS only) |
+| `ExternalAccountId` | The account ID the SDK passes to Google Play (Android only) |
+| `OpenRestoreOnWeb()` | Open the web page for restoring web purchases (Android only) |
+| `ObservePurchaseStart(productId)`, `ObservePurchaseResult(code, purchases?, debugMessage?)`, `ObservePurchaseError(productId, error)` | Report purchases made outside Superwall (Android only) |
+| `SetGameControllerForwardingEnabled(enabled)` | Forward connected game controllers to the paywall (iOS only) |
+| `DispatchGameControllerKeyEvent(keyCode, isPressed)`, `DispatchGameControllerMotionEvent(x, y)` | Forward game controller input to the paywall (Android only) |
+| `Teardown()` | Remove the SDK instance so `Configure` can be called again (static, Android only) |
 | `IsPaywallPresented` | Whether a paywall is showing |
 | `IsConfigured` | Whether SDK is configured |
 | `LogLevel` | Get/set log level |
 | `Purchase(productId, callback)` | Programmatic purchase |
 | `GetProducts(productIds, callback)` | Fetch product details |
+| `GetProductsWithError(productIds, callback)` | Fetch product details; the callback's second argument is the error, if any |
 | `GetPresentationResult(placement, params?, callback)` | Check what would happen for a placement |
 | `GetAssignments(callback)` | Get experiment assignments |
 | `ConfirmAllAssignments(callback)` | Confirm all experiment assignments |
 | `RestorePurchases(callback)` | Restore purchases |
 | `GetCustomerInfo(callback)` | Get customer info |
+| `RefreshCustomerInfo(callback)` | Fetch customer info from Superwall's servers (iOS; on Android the same as `GetCustomerInfo`) |
 | `GetDeviceAttributes(callback)` | Get device attributes |
-| `ShowAlert(title?, message?, ...)` | Show alert on current paywall |
+| `ShowAlert(title?, message?, ...)` | Show alert on current paywall (Android only; iOS calls `onClose` at once) |
 | `RefreshConfiguration()` | Force config refresh |
+| `PresentCustomerCenter(configuration?, delegate?, onDismiss?)` | Show the Customer Center |
+| `DismissCustomerCenter(completion?)` | Close the Customer Center |
 
 ## License
 

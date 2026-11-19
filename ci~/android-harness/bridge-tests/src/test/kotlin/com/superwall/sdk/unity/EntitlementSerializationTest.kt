@@ -75,7 +75,8 @@ class EntitlementSerializationTest {
     }
 
     @Test
-    fun unknownStateIsDroppedSoTheCSharpNullableStaysNull() {
-        assertFalse(serialize(Entitlement(id = "e", state = LatestSubscriptionState.UNKNOWN)).has("state"))
+    fun unknownStateArrivesAsUnknown_andNoStateStaysOut() {
+        assertEquals("unknown", serialize(Entitlement(id = "e", state = LatestSubscriptionState.UNKNOWN)).getString("state"))
+        assertFalse(serialize(Entitlement(id = "e")).has("state"))
     }
 }

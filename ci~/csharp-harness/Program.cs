@@ -125,6 +125,7 @@ namespace Superwall.Tests.Harness
                     continue;
                 }
                 context.RunPosted();
+                UnityEngine.GameObject.RunUpdates();
                 Thread.Sleep(1);
                 if (++count > MaxFrames) throw new TimeoutException($"Still running after {MaxFrames} frames");
             }

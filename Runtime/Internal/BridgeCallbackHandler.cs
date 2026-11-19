@@ -14,6 +14,8 @@ namespace Superwall.Internal
 
         public ISuperwallDelegate Delegate { get; set; }
         public IPurchaseController PurchaseController { get; set; }
+        /// <summary><see cref="PaywallOptions.OnBackPressed"/>, kept from <see cref="Superwall.Configure"/>.</summary>
+        public Action<PaywallInfo> OnBackPressed { get; set; }
 
         private readonly Dictionary<string, PaywallPresentationHandler> _presentationHandlers =
             new Dictionary<string, PaywallPresentationHandler>();
@@ -23,6 +25,10 @@ namespace Superwall.Internal
 
         private readonly Dictionary<string, Action<string>> _pendingAsyncCallbacks =
             new Dictionary<string, Action<string>>();
+
+        // The delegate and onDismiss of each Customer Center presentation, until native reports it dismissed.
+        private readonly Dictionary<string, (ICustomerCenterDelegate customerCenterDelegate, Action onDismiss)> _customerCenters =
+            new Dictionary<string, (ICustomerCenterDelegate, Action)>();
 
         // Purchase/restore callbackIds native stopped waiting for. Bounded; completions may
         // arrive off the main thread, so access is locked.
@@ -57,6 +63,133 @@ namespace Superwall.Internal
         public void RegisterAsyncCallback(string callbackId, Action<string> callback)
         {
             _pendingAsyncCallbacks[callbackId] = callback;
+        }
+
+        // Calls for platforms with no native SDK (the Editor, desktop players) answer here, a frame later, so that
+        // completions still run and nothing registered above is kept for ever. See Superwall.CompleteWithoutNative.
+        private readonly Queue<(string method, Dictionary<string, object> data)> _simulatedCallbacks =
+            new Queue<(string, Dictionary<string, object>)>();
+
+        internal void EnqueueSimulatedCallback(string method, Dictionary<string, object> data)
+        {
+            _simulatedCallbacks.Enqueue((method, data));
+        }
+
+        internal void RunSimulatedCallbacks()
+        {
+            // Only what is queued now: a completion may queue another call's answer, which waits for the next frame.
+            for (var remaining = _simulatedCallbacks.Count; remaining > 0; remaining--)
+            {
+                var (method, data) = _simulatedCallbacks.Dequeue();
+                try
+                {
+                    RouteCallback(method, data);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogError($"[Superwall] Error handling callback: {e.Message}\n{e.StackTrace}");
+                }
+            }
+        }
+
+#if !(UNITY_IOS || UNITY_ANDROID) || UNITY_EDITOR
+        private void Update()
+        {
+            if (_simulatedCallbacks.Count > 0) RunSimulatedCallbacks();
+        }
+#endif
+
+        internal int PresentationHandlerCount => _presentationHandlers.Count;
+        internal int PendingAsyncCallbackCount => _pendingAsyncCallbacks.Count;
+
+        /// <summary>Forgets everything registered for the native SDK instance that <see cref="Superwall.Teardown"/> removed.</summary>
+        internal void Clear()
+        {
+            Delegate = null;
+            PurchaseController = null;
+            OnBackPressed = null;
+            _presentationHandlers.Clear();
+            _featureHandlers.Clear();
+            _pendingAsyncCallbacks.Clear();
+            _customerCenters.Clear();
+            _embeddedPaywalls.Clear();
+            _simulatedCallbacks.Clear();
+        }
+
+        // Each embedded paywall and its handler, until it is removed, finishes for good or fails.
+        private readonly Dictionary<string, (EmbeddedPaywall paywall, EmbeddedPaywallHandler handler)> _embeddedPaywalls =
+            new Dictionary<string, (EmbeddedPaywall, EmbeddedPaywallHandler)>();
+
+        internal int EmbeddedPaywallCount => _embeddedPaywalls.Count;
+
+        internal void RegisterEmbeddedPaywall(string viewId, EmbeddedPaywall paywall, EmbeddedPaywallHandler handler)
+        {
+            _embeddedPaywalls[viewId] = (paywall, handler);
+            // Native sends an embedded paywall's custom callbacks like any other's, with the view as the handler.
+            if (handler?.OnCustomCallback != null)
+                _presentationHandlers[viewId] = new PaywallPresentationHandler { OnCustomCallback = handler.OnCustomCallback };
+        }
+
+        internal void UnregisterEmbeddedPaywall(string viewId)
+        {
+            _embeddedPaywalls.Remove(viewId);
+            _presentationHandlers.Remove(viewId);
+        }
+
+        private void HandleEmbeddedPaywall(string method, Dictionary<string, object> data)
+        {
+            var viewId = GetString(data, "viewId");
+            if (viewId == null || !_embeddedPaywalls.TryGetValue(viewId, out var entry)) return;
+            var handler = entry.handler;
+            switch (method)
+            {
+                case "embeddedPaywallOnPresent":
+                    handler?.OnPresent?.Invoke(DeserializePaywallInfo(GetDict(data, "paywallInfo")));
+                    break;
+                case "embeddedPaywallOnSkip":
+                    // Nothing was put on screen, and nothing will be: native only has its record of the view to drop.
+                    entry.paywall.IsRemoved = true;
+                    UnregisterEmbeddedPaywall(viewId);
+                    Superwall.CallNative_RemoveEmbeddedPaywall(viewId);
+                    handler?.OnSkip?.Invoke(DeserializePaywallSkippedReason(GetString(data, "reason")), DeserializeExperiment(GetDict(data, "experiment")));
+                    break;
+                case "embeddedPaywallOnError":
+                    entry.paywall.IsRemoved = true;
+                    UnregisterEmbeddedPaywall(viewId);
+                    // Let native drop what it holds for the view: after a failed load that is only its record of it.
+                    Superwall.CallNative_RemoveEmbeddedPaywall(viewId);
+                    handler?.OnError?.Invoke(GetString(data, "error"));
+                    break;
+                case "embeddedPaywallOnFinished":
+                    var shouldDismiss = GetBool(data, "shouldDismiss");
+                    if (shouldDismiss)
+                    {
+                        // Native has taken the view off the screen already.
+                        entry.paywall.IsRemoved = true;
+                        UnregisterEmbeddedPaywall(viewId);
+                    }
+                    handler?.OnFinished?.Invoke(DeserializePaywallInfo(GetDict(data, "paywallInfo")),
+                        DeserializePaywallResult(GetDict(data, "result")), shouldDismiss);
+                    break;
+            }
+        }
+
+        internal void RemoveAsyncCallback(string callbackId)
+        {
+            if (callbackId != null) _pendingAsyncCallbacks.Remove(callbackId);
+        }
+
+        /// <summary>Runs and forgets a completion that native won't be asked to answer.</summary>
+        internal void CompleteAsyncCallback(string callbackId)
+        {
+            if (callbackId == null || !_pendingAsyncCallbacks.TryGetValue(callbackId, out var callback)) return;
+            _pendingAsyncCallbacks.Remove(callbackId);
+            callback?.Invoke(null);
+        }
+
+        public void RegisterCustomerCenter(string presentationId, ICustomerCenterDelegate customerCenterDelegate, Action onDismiss)
+        {
+            _customerCenters[presentationId] = (customerCenterDelegate, onDismiss);
         }
 
         // Called by native code via UnitySendMessage("SuperwallBridge", "OnCallback", jsonPayload)
@@ -161,6 +294,9 @@ namespace Superwall.Internal
                 case "onPresent":
                     HandleOnPresent(data);
                     break;
+                case "onWillDismiss":
+                    HandleOnWillDismiss(data);
+                    break;
                 case "onDismiss":
                     HandleOnDismiss(data);
                     break;
@@ -172,6 +308,46 @@ namespace Superwall.Internal
                     break;
                 case "onCustomCallback":
                     HandleOnCustomCallback(data);
+                    break;
+                case "releasePresentationHandler":
+                    UnregisterPresentationHandler(GetString(data, "handlerId") ?? "");
+                    break;
+
+                // --- Embedded paywall ---
+                case "embeddedPaywallOnPresent":
+                case "embeddedPaywallOnSkip":
+                case "embeddedPaywallOnError":
+                case "embeddedPaywallOnFinished":
+                    HandleEmbeddedPaywall(method, data);
+                    break;
+
+                // --- Paywall options ---
+                case "onBackPressed":
+                    OnBackPressed?.Invoke(DeserializePaywallInfo(GetDict(data, "paywallInfo")));
+                    break;
+
+                // --- Customer Center ---
+                case "customerCenterShouldRestorePurchases":
+                    HandleCustomerCenterShouldRestorePurchases(data);
+                    break;
+                case "customerCenterDidSelectAction":
+                    CustomerCenterDelegateFor(data)?.DidSelectAction(
+                        DeserializeCustomerCenterAction(GetDict(data, "action")), GetString(data, "pathId"),
+                        DeserializeCustomerCenterPurchase(GetDict(data, "purchase")));
+                    break;
+                case "customerCenterDidCompleteSurvey":
+                    CustomerCenterDelegateFor(data)?.DidCompleteSurvey(GetString(data, "surveyId"), GetString(data, "optionId"),
+                        DeserializeCustomerCenterAction(GetDict(data, "action")), GetString(data, "pathId"));
+                    break;
+                case "customerCenterDidCompleteRefundRequest":
+                    CustomerCenterDelegateFor(data)?.DidCompleteRefundRequest(GetString(data, "productId"),
+                        ParseEnum<CustomerCenterRefundStatus>(GetString(data, "status")) ?? CustomerCenterRefundStatus.Error);
+                    break;
+                case "customerCenterDidDismiss":
+                    CustomerCenterDelegateFor(data)?.DidDismiss();
+                    break;
+                case "customerCenterOnDismiss":
+                    HandleCustomerCenterOnDismiss(data);
                     break;
 
                 // --- Feature handler ---
@@ -352,10 +528,17 @@ namespace Superwall.Internal
             var offerTypeStr = GetString(data, "offerType");
             entitlement.OfferType = ParseEnum<LatestSubscriptionOfferType>(offerTypeStr);
 
+            if (data.ContainsKey("isRevoked") && data["isRevoked"] != null)
+                entitlement.IsRevoked = GetBool(data, "isRevoked");
+            entitlement.RenewsAt = data.ContainsKey("renewsAt") && data["renewsAt"] != null ? (long?)GetLong(data, "renewsAt") : null;
+            if (data.ContainsKey("isInGracePeriod") && data["isInGracePeriod"] != null)
+                entitlement.IsInGracePeriod = GetBool(data, "isInGracePeriod");
+
             return entitlement;
         }
 
-        private static PaywallInfo DeserializePaywallInfo(Dictionary<string, object> data)
+        // Also used by Superwall.LatestPaywallInfo, which had a slimmer parser of its own.
+        internal static PaywallInfo DeserializePaywallInfo(Dictionary<string, object> data)
         {
             if (data == null) return null;
 
@@ -449,6 +632,32 @@ namespace Superwall.Internal
 
             info.State = GetDict(data, "state");
 
+            info.CacheKey = GetString(data, "cacheKey");
+            info.BuildId = GetString(data, "buildId");
+            info.ShimmerLoadStartTime = GetString(data, "shimmerLoadStartTime");
+            info.ShimmerLoadCompleteTime = GetString(data, "shimmerLoadCompleteTime");
+            if (data.ContainsKey("isScrollEnabled") && data["isScrollEnabled"] != null)
+                info.IsScrollEnabled = GetBool(data, "isScrollEnabled");
+            info.PresentationId = GetString(data, "presentationId");
+            if (data.ContainsKey("isLocal") && data["isLocal"] != null)
+                info.IsLocal = GetBool(data, "isLocal");
+
+            var presentation = GetDict(data, "presentation");
+            if (presentation != null)
+            {
+                info.Presentation = new PaywallPresentationInfo
+                {
+                    Style = ParseEnum<PaywallPresentationStyle>(GetString(presentation, "style")) ?? PaywallPresentationStyle.None,
+                    Delay = GetLong(presentation, "delay"),
+                    Height = GetDoubleNullable(presentation, "height"),
+                    Width = GetDoubleNullable(presentation, "width"),
+                    CornerRadius = GetDoubleNullable(presentation, "cornerRadius"),
+                };
+            }
+            info.IntroOfferEligibility = ParseEnum<IntroOfferEligibility>(GetString(data, "introOfferEligibility"));
+            info.DatabaseId = GetString(data, "databaseId");
+            info.CustomerInfo = DeserializeCustomerInfo(GetDict(data, "customerInfo"));
+
             return info;
         }
 
@@ -457,7 +666,52 @@ namespace Superwall.Internal
             if (data == null) return null;
             var p = new Product();
             p.Id = GetString(data, "id");
+            p.ProductIdentifier = GetString(data, "productIdentifier") ?? p.Id;
             p.Name = GetString(data, "name");
+            p.Store = ParseEnum<ProductStore>(GetString(data, "store"));
+            var appStore = GetDict(data, "appStoreProduct");
+            if (appStore != null)
+            {
+                p.AppStoreProduct = new AppStoreProduct
+                {
+                    Id = GetString(appStore, "id"),
+                    BillingPlanType = ParseEnum<BillingPlanType>(GetString(appStore, "billingPlanType")),
+                };
+            }
+            var stripe = GetDict(data, "stripeProduct");
+            if (stripe != null)
+            {
+                p.StripeProduct = new StripeProduct
+                {
+                    Id = GetString(stripe, "id"),
+                    TrialDays = GetIntNullable(stripe, "trialDays"),
+                    Environment = GetString(stripe, "environment"),
+                };
+            }
+            var paddle = GetDict(data, "paddleProduct");
+            if (paddle != null)
+            {
+                p.PaddleProduct = new PaddleProduct
+                {
+                    Id = GetString(paddle, "id"),
+                    TrialDays = GetIntNullable(paddle, "trialDays"),
+                    Environment = GetString(paddle, "environment"),
+                };
+            }
+            var playStore = GetDict(data, "playStoreProduct");
+            if (playStore != null)
+            {
+                p.PlayStoreProduct = new PlayStoreProduct
+                {
+                    Id = GetString(playStore, "id"),
+                    BasePlanIdentifier = GetString(playStore, "basePlanIdentifier"),
+                    OfferType = ParseEnum<PlayStoreOfferType>(GetString(playStore, "offerType")) ?? PlayStoreOfferType.Automatic,
+                    OfferIdentifier = GetString(playStore, "offerIdentifier"),
+                    FullIdentifier = GetString(playStore, "fullIdentifier"),
+                };
+            }
+            var custom = GetDict(data, "customProduct");
+            if (custom != null) p.CustomProduct = new CustomStoreProduct { Id = GetString(custom, "id") };
             var entList = GetList(data, "entitlements");
             if (entList != null)
             {
@@ -480,7 +734,10 @@ namespace Superwall.Internal
             n.Title = GetString(data, "title");
             n.Subtitle = GetString(data, "subtitle");
             n.Body = GetString(data, "body");
-            n.Delay = GetIntNullable(data, "delay") ?? 0;
+            // Milliseconds, a long natively: a trial reminder a month out doesn't fit in an int, and a cast would
+            // turn it negative.
+            n.DelayMilliseconds = GetLong(data, "delay");
+            n.Delay = (int)Math.Max(int.MinValue, Math.Min(int.MaxValue, n.DelayMilliseconds));
             return n;
         }
 
@@ -547,12 +804,15 @@ namespace Superwall.Internal
             return experiment;
         }
 
-        private static CustomerInfo DeserializeCustomerInfo(Dictionary<string, object> data)
+        // Also used by Superwall.GetCustomerInfo. Dates are epoch milliseconds.
+        internal static CustomerInfo DeserializeCustomerInfo(Dictionary<string, object> data)
         {
             if (data == null) return null;
 
             var info = new CustomerInfo();
             info.UserId = GetString(data, "userId");
+            info.ActiveSubscriptionProductIds = GetList(data, "activeSubscriptionProductIds")?
+                .Select(p => p?.ToString()).Where(p => p != null).ToList();
 
             var entitlementsList = GetList(data, "entitlements");
             if (entitlementsList != null)
@@ -565,7 +825,95 @@ namespace Superwall.Internal
                 }
             }
 
+            var subscriptionsList = GetList(data, "subscriptions");
+            if (subscriptionsList != null)
+            {
+                info.Subscriptions = new List<SubscriptionTransaction>();
+                foreach (var item in subscriptionsList)
+                {
+                    if (item is Dictionary<string, object> t) info.Subscriptions.Add(DeserializeSubscriptionTransaction(t));
+                }
+            }
+
+            var nonSubscriptionsList = GetList(data, "nonSubscriptions");
+            if (nonSubscriptionsList != null)
+            {
+                info.NonSubscriptions = new List<NonSubscriptionTransaction>();
+                foreach (var item in nonSubscriptionsList)
+                {
+                    if (item is Dictionary<string, object> t) info.NonSubscriptions.Add(DeserializeNonSubscriptionTransaction(t));
+                }
+            }
+
             return info;
+        }
+
+        private static SubscriptionTransaction DeserializeSubscriptionTransaction(Dictionary<string, object> t)
+        {
+            if (t == null) return null;
+            return new SubscriptionTransaction
+            {
+                TransactionId = GetString(t, "transactionId"),
+                ProductId = GetString(t, "productId"),
+                PurchaseDate = GetLong(t, "purchaseDate"),
+                WillRenew = GetBool(t, "willRenew"),
+                IsRevoked = GetBool(t, "isRevoked"),
+                IsInGracePeriod = GetBool(t, "isInGracePeriod"),
+                IsInBillingRetryPeriod = GetBool(t, "isInBillingRetryPeriod"),
+                IsActive = GetBool(t, "isActive"),
+                ExpirationDate = t.ContainsKey("expirationDate") && t["expirationDate"] != null ? (long?)GetLong(t, "expirationDate") : null,
+                OfferType = ParseEnum<LatestSubscriptionOfferType>(GetString(t, "offerType")),
+                SubscriptionGroupId = GetString(t, "subscriptionGroupId"),
+                Store = ParseEnum<ProductStore>(GetString(t, "store")),
+            };
+        }
+
+        private static NonSubscriptionTransaction DeserializeNonSubscriptionTransaction(Dictionary<string, object> t)
+        {
+            if (t == null) return null;
+            return new NonSubscriptionTransaction
+            {
+                TransactionId = GetString(t, "transactionId"),
+                ProductId = GetString(t, "productId"),
+                PurchaseDate = GetLong(t, "purchaseDate"),
+                IsConsumable = GetBool(t, "isConsumable"),
+                IsRevoked = GetBool(t, "isRevoked"),
+                Store = ParseEnum<ProductStore>(GetString(t, "store")),
+            };
+        }
+
+        // Both bridges send the action as {type, url?, identifier?} with camelCase type names.
+        internal static CustomerCenterAction DeserializeCustomerCenterAction(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            return new CustomerCenterAction
+            {
+                Type = ParseEnum<CustomerCenterActionType>(GetString(data, "type")) ?? CustomerCenterActionType.Custom,
+                Url = GetString(data, "url"),
+                Identifier = GetString(data, "identifier"),
+            };
+        }
+
+        private static CustomerCenterPurchase DeserializeCustomerCenterPurchase(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var purchase = new CustomerCenterPurchase
+            {
+                ProductId = GetString(data, "productId"),
+                Store = ParseEnum<ProductStore>(GetString(data, "store")),
+                Entitlements = new List<Entitlement>(),
+                Subscription = DeserializeSubscriptionTransaction(GetDict(data, "subscription")),
+                NonSubscription = DeserializeNonSubscriptionTransaction(GetDict(data, "nonSubscription")),
+            };
+            var entitlements = GetList(data, "entitlements");
+            if (entitlements != null)
+            {
+                foreach (var item in entitlements)
+                {
+                    if (item is Dictionary<string, object> e) purchase.Entitlements.Add(DeserializeEntitlement(e));
+                }
+            }
+            return purchase;
         }
 
         private static SuperwallEventInfo DeserializeSuperwallEventInfo(Dictionary<string, object> data)
@@ -587,8 +935,8 @@ namespace Superwall.Internal
             var paramsDict = GetDict(data, "params");
             info.Params = paramsDict;
 
-            // Populated by the native bridges only for the events that carry them (paywall open/close/
-            // decline, the transaction family). Absent keys leave the fields null.
+            // Populated by the native bridges only for the events that carry them. Absent keys leave the
+            // fields null.
             info.PaywallInfo = DeserializePaywallInfo(GetDict(data, "paywallInfo"));
 
             var productDict = GetDict(data, "product");
@@ -602,7 +950,219 @@ namespace Superwall.Internal
             info.Error = GetString(data, "error");
             info.RestoreType = GetString(data, "restoreType");
 
+            info.PlacementName = GetString(data, "placementName");
+            info.DeviceAttributes = GetDict(data, "deviceAttributes");
+            info.DeepLinkUrl = GetString(data, "deepLinkUrl");
+            info.Result = DeserializeTriggerResult(GetDict(data, "result"));
+            info.TriggeredPlacementName = GetString(data, "triggeredPlacementName");
+            info.Attempt = GetIntNullable(data, "attempt");
+            info.Name = GetString(data, "name");
+            var surveyDict = GetDict(data, "survey");
+            if (surveyDict != null)
+                info.Survey = DeserializeSurvey(surveyDict);
+            var optionDict = GetDict(data, "selectedOption");
+            if (optionDict != null)
+                info.SelectedOption = new SurveyOption { Id = GetString(optionDict, "id"), Text = GetString(optionDict, "text") };
+            info.CustomResponse = GetString(data, "customResponse");
+            info.Status = ParseEnum<PaywallPresentationRequestStatusType>(GetString(data, "status"));
+            info.UserAttributes = GetDict(data, "userAttributes");
+            info.Token = GetString(data, "token");
+            info.UserEnrichment = GetDict(data, "userEnrichment");
+            info.DeviceEnrichment = GetDict(data, "deviceEnrichment");
+            info.Message = GetString(data, "message");
+            info.IntegrationAttributes = GetDict(data, "integrationAttributes");
+            info.ReviewRequestedCount = GetIntNullable(data, "reviewRequestedCount");
+            var missingList = GetList(data, "missingProductIdentifiers");
+            if (missingList != null)
+                info.MissingProductIdentifiers = missingList.Select(p => p?.ToString()).Where(p => p != null).ToList();
+            info.PermissionName = GetString(data, "permissionName");
+            info.PaywallIdentifier = GetString(data, "paywallIdentifier");
+            info.PaywallCount = GetIntNullable(data, "paywallCount");
+            info.TransactionType = ParseEnum<TransactionType>(GetString(data, "transactionType"));
+            info.CustomerCenterAction = DeserializeCustomerCenterAction(GetDict(data, "customerCenterAction"));
+            info.CustomerCenterPathId = GetString(data, "customerCenterPathId");
+            info.CustomerCenterProductId = GetString(data, "customerCenterProductId");
+            info.CustomerCenterSurveyId = GetString(data, "customerCenterSurveyId");
+            info.CustomerCenterSurveyOptionId = GetString(data, "customerCenterSurveyOptionId");
+            info.CustomerCenterRefundStatus = ParseEnum<CustomerCenterRefundStatus>(GetString(data, "customerCenterRefundStatus"));
+            info.CustomerCenterScreen = ParseEnum<CustomerCenterScreenType>(GetString(data, "customerCenterScreen"));
+            info.CustomerCenterPresentationStyle = ParseEnum<CustomerCenterPresentationStyle>(GetString(data, "customerCenterPresentationStyle"));
+
+            info.AttributionMatchInfo = DeserializeAttributionMatchInfo(GetDict(data, "attributionMatchInfo"));
+            info.PageViewData = DeserializePageViewData(GetDict(data, "pageViewData"));
+            info.TransactionProduct = DeserializeTransactionProduct(GetDict(data, "transactionProduct"));
+            info.StatusReason = DeserializeStatusReason(GetDict(data, "statusReason"));
+            info.ShimmerDuration = GetDoubleNullable(data, "shimmerDuration");
+            info.ResourceUrl = GetString(data, "resourceUrl");
+            info.ReviewCount = GetIntNullable(data, "reviewCount") ?? info.ReviewRequestedCount;
+            info.PlacementParams = GetDict(data, "placementParams");
+            info.PreviousCustomerInfo = DeserializeCustomerInfo(GetDict(data, "previousCustomerInfo"));
+            info.CustomerInfo = DeserializeCustomerInfo(GetDict(data, "customerInfo"));
+
             return info;
+        }
+
+        // `mmp` and `apple_search_ads` on the wire, as the native SDKs name the providers.
+        internal static AttributionMatchInfo DeserializeAttributionMatchInfo(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            return new AttributionMatchInfo
+            {
+                Provider = ParseEnum<AttributionMatchProvider>((GetString(data, "provider") ?? "").Replace("_", string.Empty)) ?? AttributionMatchProvider.Mmp,
+                Matched = GetBool(data, "matched"),
+                Source = GetString(data, "source"),
+                Confidence = ParseEnum<AttributionMatchConfidence>(GetString(data, "confidence")),
+                MatchScore = GetDoubleNullable(data, "matchScore"),
+                Reason = GetString(data, "reason"),
+            };
+        }
+
+        internal static PageViewData DeserializePageViewData(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            return new PageViewData
+            {
+                PageNodeId = GetString(data, "pageNodeId"),
+                FlowPosition = GetIntNullable(data, "flowPosition") ?? 0,
+                PageName = GetString(data, "pageName"),
+                NavigationNodeId = GetString(data, "navigationNodeId"),
+                PreviousPageNodeId = GetString(data, "previousPageNodeId"),
+                PreviousFlowPosition = GetIntNullable(data, "previousFlowPosition"),
+                NavigationType = GetString(data, "navigationType"),
+                TimeOnPreviousPageMs = GetIntNullable(data, "timeOnPreviousPageMs"),
+            };
+        }
+
+        internal static TransactionProduct DeserializeTransactionProduct(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var product = new TransactionProduct
+            {
+                Id = GetString(data, "id"),
+                Locale = GetString(data, "locale"),
+                LanguageCode = GetString(data, "languageCode"),
+            };
+            var price = GetDict(data, "price");
+            if (price != null)
+            {
+                product.Price = new TransactionProductPrice
+                {
+                    Raw = price.ContainsKey("raw") ? Superwall.ToDoubleInvariant(price["raw"]) : 0,
+                    Localized = GetString(price, "localized"),
+                    Daily = GetString(price, "daily"),
+                    Weekly = GetString(price, "weekly"),
+                    Monthly = GetString(price, "monthly"),
+                    Yearly = GetString(price, "yearly"),
+                };
+            }
+            var trial = GetDict(data, "trialPeriod");
+            if (trial != null)
+            {
+                product.TrialPeriod = new TransactionProductTrialPeriod
+                {
+                    Days = GetIntNullable(trial, "days") ?? 0,
+                    Weeks = GetIntNullable(trial, "weeks") ?? 0,
+                    Months = GetIntNullable(trial, "months") ?? 0,
+                    Years = GetIntNullable(trial, "years") ?? 0,
+                    Text = GetString(trial, "text"),
+                    EndAt = trial.ContainsKey("endAt") && trial["endAt"] != null ? (long?)GetLong(trial, "endAt") : null,
+                };
+            }
+            var period = GetDict(data, "period");
+            if (period != null)
+            {
+                product.Period = new TransactionProductPeriod
+                {
+                    Alt = GetString(period, "alt"),
+                    Ly = GetString(period, "ly"),
+                    Unit = ParseEnum<SubscriptionPeriodUnit>(GetString(period, "unit")) ?? SubscriptionPeriodUnit.Day,
+                    Days = GetIntNullable(period, "days") ?? 0,
+                    Weeks = GetIntNullable(period, "weeks") ?? 0,
+                    Months = GetIntNullable(period, "months") ?? 0,
+                    Years = GetIntNullable(period, "years") ?? 0,
+                };
+            }
+            var currency = GetDict(data, "currency");
+            if (currency != null)
+            {
+                product.Currency = new TransactionProductCurrency
+                {
+                    Code = GetString(currency, "code"),
+                    Symbol = GetString(currency, "symbol"),
+                };
+            }
+            return product;
+        }
+
+        private static PaywallPresentationRequestStatusReason DeserializeStatusReason(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var type = ParseEnum<PaywallPresentationRequestStatusReasonType>(GetString(data, "type"));
+            if (!type.HasValue) return null;
+            return new PaywallPresentationRequestStatusReason
+            {
+                Type = type.Value,
+                Experiment = DeserializeExperiment(GetDict(data, "experiment")),
+                Info = GetString(data, "info"),
+            };
+        }
+
+        internal static SubscriptionPeriod DeserializeSubscriptionPeriod(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            return new SubscriptionPeriod
+            {
+                Value = GetIntNullable(data, "value") ?? 0,
+                Unit = ParseEnum<SubscriptionPeriodUnit>(GetString(data, "unit")) ?? SubscriptionPeriodUnit.Day,
+            };
+        }
+
+        internal static StoreProductDiscount DeserializeDiscount(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            return new StoreProductDiscount
+            {
+                OfferIdentifier = GetString(data, "offerIdentifier"),
+                CurrencyCode = GetString(data, "currencyCode"),
+                Price = data.ContainsKey("price") ? Superwall.ToDoubleInvariant(data["price"]) : 0,
+                LocalizedPriceString = GetString(data, "localizedPriceString"),
+                PaymentMode = ParseEnum<DiscountPaymentMode>(GetString(data, "paymentMode")) ?? DiscountPaymentMode.PayAsYouGo,
+                SubscriptionPeriod = DeserializeSubscriptionPeriod(GetDict(data, "subscriptionPeriod")),
+                NumberOfPeriods = GetIntNullable(data, "numberOfPeriods") ?? 0,
+                Type = ParseEnum<DiscountType>(GetString(data, "type")) ?? DiscountType.Introductory,
+            };
+        }
+
+        // Used by Superwall.DeserializeStoreProduct for the fields whose helpers live here.
+        internal static void ReadStoreProductExtras(Dictionary<string, object> data, StoreProduct product)
+        {
+            product.SubscriptionPeriod = DeserializeSubscriptionPeriod(GetDict(data, "subscriptionPeriod"));
+            product.IntroductoryDiscount = DeserializeDiscount(GetDict(data, "introductoryDiscount"));
+            var discounts = GetList(data, "discounts");
+            if (discounts != null)
+            {
+                product.Discounts = new List<StoreProductDiscount>();
+                foreach (var item in discounts)
+                {
+                    if (item is Dictionary<string, object> discount) product.Discounts.Add(DeserializeDiscount(discount));
+                }
+            }
+            product.BillingPlanType = ParseEnum<BillingPlanType>(GetString(data, "billingPlanType"));
+            product.IsBillingPlanAvailable = GetBool(data, "isBillingPlanAvailable");
+        }
+
+        private static TriggerResult DeserializeTriggerResult(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            switch (GetString(data, "type"))
+            {
+                case "placementNotFound": return TriggerResult.PlacementNotFound();
+                case "noAudienceMatch": return TriggerResult.NoAudienceMatch();
+                case "paywall": return TriggerResult.Paywall(DeserializeExperiment(GetDict(data, "experiment")));
+                case "holdout": return TriggerResult.Holdout(DeserializeExperiment(GetDict(data, "experiment")));
+                case "error": return TriggerResult.Error(GetString(data, "error"));
+                default: return null;
+            }
         }
 
         private static StoreTransaction DeserializeStoreTransaction(Dictionary<string, object> data)
@@ -624,6 +1184,20 @@ namespace Superwall.Internal
             transaction.ExpirationDate = GetString(data, "expirationDate");
             transaction.OfferId = GetString(data, "offerId");
             transaction.RevocationDate = GetString(data, "revocationDate");
+            transaction.State = ParseEnum<StoreTransactionState>(GetString(data, "state"));
+            var paymentDict = GetDict(data, "payment");
+            if (paymentDict != null)
+            {
+                transaction.Payment = new StorePayment
+                {
+                    ProductIdentifier = GetString(paymentDict, "productIdentifier"),
+                    Quantity = GetIntNullable(paymentDict, "quantity") ?? 0,
+                    DiscountIdentifier = GetString(paymentDict, "discountIdentifier"),
+                };
+            }
+            transaction.AppAccountToken = GetString(data, "appAccountToken");
+            transaction.PurchaseToken = GetString(data, "purchaseToken");
+            transaction.Signature = GetString(data, "signature");
             return transaction;
         }
 
@@ -671,6 +1245,42 @@ namespace Superwall.Internal
 
             var info = new RedemptionInfo();
 
+            var ownershipDict = GetDict(data, "ownership");
+            switch (GetString(ownershipDict, "type"))
+            {
+                case "appUser":
+                    info.Ownership = Ownership.AppUser(GetString(ownershipDict, "appUserId"));
+                    break;
+                case "device":
+                    info.Ownership = Ownership.Device(GetString(ownershipDict, "deviceId"));
+                    break;
+            }
+
+            var purchaserDict = GetDict(data, "purchaserInfo");
+            if (purchaserDict != null)
+            {
+                info.PurchaserInfo = new PurchaserInfo
+                {
+                    AppUserId = GetString(purchaserDict, "appUserId"),
+                    Email = GetString(purchaserDict, "email"),
+                    StoreIdentifiers = DeserializeStoreIdentifiers(GetDict(purchaserDict, "storeIdentifiers")),
+                };
+            }
+
+            var paywallDict = GetDict(data, "paywallInfo");
+            if (paywallDict != null)
+            {
+                info.PaywallInfo = new RedemptionPaywallInfo
+                {
+                    Identifier = GetString(paywallDict, "identifier"),
+                    PlacementName = GetString(paywallDict, "placementName"),
+                    PlacementParams = GetDict(paywallDict, "placementParams"),
+                    VariantId = GetString(paywallDict, "variantId"),
+                    ExperimentId = GetString(paywallDict, "experimentId"),
+                    ProductIdentifier = GetString(paywallDict, "productIdentifier"),
+                };
+            }
+
             var entitlementsList = GetList(data, "entitlements");
             if (entitlementsList != null)
             {
@@ -682,7 +1292,22 @@ namespace Superwall.Internal
                 }
             }
 
+            info.UserAttributes = GetDict(data, "userAttributes");
+
             return info;
+        }
+
+        private static StoreIdentifiers DeserializeStoreIdentifiers(Dictionary<string, object> data)
+        {
+            if (data == null) return null;
+            var subscriptionIds = GetList(data, "subscriptionIds")?.Select(p => p?.ToString()).Where(p => p != null).ToList();
+            switch (GetString(data, "type"))
+            {
+                case "stripe": return StoreIdentifiers.Stripe(GetString(data, "customerId"), subscriptionIds);
+                case "paddle": return StoreIdentifiers.Paddle(GetString(data, "customerId"), subscriptionIds);
+                case "unknown": return StoreIdentifiers.Unknown(GetString(data, "store"), GetDict(data, "additionalInfo"));
+                default: return null;
+            }
         }
 
         private static PaywallResult DeserializePaywallResult(Dictionary<string, object> data)
@@ -714,6 +1339,8 @@ namespace Superwall.Internal
                     return PaywallSkippedReason.NoAudienceMatch;
                 case "placementnotfound":
                     return PaywallSkippedReason.PlacementNotFound;
+                case "userissubscribed":
+                    return PaywallSkippedReason.UserIsSubscribed;
                 default:
                     return PaywallSkippedReason.NoAudienceMatch;
             }
@@ -1168,21 +1795,40 @@ namespace Superwall.Internal
             handler.OnPresent(paywallInfo);
         }
 
+        private void HandleOnWillDismiss(Dictionary<string, object> data)
+        {
+            var handlerId = GetString(data, "handlerId");
+            if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
+
+            var handler = _presentationHandlers[handlerId];
+            if (handler.OnWillDismiss == null) return;
+
+            handler.OnWillDismiss(DeserializePaywallInfo(GetDict(data, "paywallInfo")), DeserializePaywallResult(GetDict(data, "result")));
+        }
+
         private void HandleOnDismiss(Dictionary<string, object> data)
         {
             var handlerId = GetString(data, "handlerId");
             if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
 
             var handler = _presentationHandlers[handlerId];
-            if (handler.OnDismiss == null) return;
-
             var paywallInfoDict = GetDict(data, "paywallInfo");
             PaywallInfo paywallInfo = DeserializePaywallInfo(paywallInfoDict);
+            if (paywallInfo?.CloseReason != PaywallCloseReason.ForNextPaywall) ReleasePresentationHandler(handlerId);
+            if (handler.OnDismiss == null) return;
 
             var resultDict = GetDict(data, "result");
             PaywallResult paywallResult = DeserializePaywallResult(resultDict);
 
             handler.OnDismiss(paywallInfo, paywallResult);
+        }
+
+        // A handler belongs to one RegisterPlacement call and hears nothing after its paywall is dismissed, skipped or
+        // fails, so it's let go then. The exception is a paywall closed to show the next one in the same call
+        // (a paywall opened from a paywall), whose handler goes on to hear about that one.
+        private void ReleasePresentationHandler(string handlerId)
+        {
+            if (handlerId != null) _presentationHandlers.Remove(handlerId);
         }
 
         private void HandleOnError(Dictionary<string, object> data)
@@ -1191,6 +1837,7 @@ namespace Superwall.Internal
             if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
 
             var handler = _presentationHandlers[handlerId];
+            ReleasePresentationHandler(handlerId);
             if (handler.OnError == null) return;
 
             var error = data.ContainsKey("error") ? data["error"] as string : null;
@@ -1203,11 +1850,19 @@ namespace Superwall.Internal
             if (handlerId == null || !_presentationHandlers.ContainsKey(handlerId)) return;
 
             var handler = _presentationHandlers[handlerId];
-            if (handler.OnSkip == null) return;
+            ReleasePresentationHandler(handlerId);
 
             var reasonStr = GetString(data, "reason");
             PaywallSkippedReason reason = DeserializePaywallSkippedReason(reasonStr);
-            handler.OnSkip(reason);
+            // Run the second even if the first throws: OnCallback only logs what escapes.
+            try
+            {
+                handler.OnSkip?.Invoke(reason);
+            }
+            finally
+            {
+                handler.OnSkipWithExperiment?.Invoke(reason, DeserializeExperiment(GetDict(data, "experiment")));
+            }
         }
 
         // Native holds the paywall's request until it gets a reply, so every path here must reply.
@@ -1247,6 +1902,66 @@ namespace Superwall.Internal
                 Debug.LogError($"[Superwall] OnCustomCallback threw for '{customCallback.Name}': {e.Message}\n{e.StackTrace}");
             }
             return CustomCallbackResult.Failure();
+        }
+
+        #endregion
+
+        #region Customer Center
+
+        private ICustomerCenterDelegate CustomerCenterDelegateFor(Dictionary<string, object> data)
+        {
+            var presentationId = GetString(data, "presentationId");
+            if (presentationId == null || !_customerCenters.TryGetValue(presentationId, out var presentation)) return null;
+            return presentation.customerCenterDelegate;
+        }
+
+        // Native holds the restore until it gets a reply, so every path here replies, once.
+        private void HandleCustomerCenterShouldRestorePurchases(Dictionary<string, object> data)
+        {
+            var callbackId = GetString(data, "callbackId");
+            var replied = false;
+            Action<bool> proceed = (shouldRestore) =>
+            {
+                if (replied) return;
+                replied = true;
+                SendCustomerCenterShouldRestoreToNative(callbackId, shouldRestore);
+            };
+
+            var customerCenterDelegate = CustomerCenterDelegateFor(data);
+            if (customerCenterDelegate == null)
+            {
+                proceed(true);
+                return;
+            }
+            try
+            {
+                customerCenterDelegate.ShouldRestorePurchases(proceed);
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[Superwall] ShouldRestorePurchases threw: {e.Message}\n{e.StackTrace}");
+                proceed(true);
+            }
+        }
+
+        private void HandleCustomerCenterOnDismiss(Dictionary<string, object> data)
+        {
+            var presentationId = GetString(data, "presentationId");
+            if (presentationId == null || !_customerCenters.TryGetValue(presentationId, out var presentation)) return;
+            _customerCenters.Remove(presentationId);
+            presentation.onDismiss?.Invoke();
+        }
+
+        private static void SendCustomerCenterShouldRestoreToNative(string callbackId, bool proceed)
+        {
+            if (string.IsNullOrEmpty(callbackId)) return;
+#if UNITY_IOS && !UNITY_EDITOR
+            SuperwallBridgeiOS._SuperwallBridge_RespondToCustomerCenterShouldRestore(callbackId, proceed);
+#elif UNITY_ANDROID && !UNITY_EDITOR
+            SuperwallBridgeAndroid.RespondToCustomerCenterShouldRestore(callbackId, proceed);
+#else
+            Debug.Log($"[Superwall] RespondToCustomerCenterShouldRestore(callbackId={callbackId}, proceed={proceed})");
+#endif
         }
 
         #endregion

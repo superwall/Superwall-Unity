@@ -253,6 +253,147 @@ namespace Superwall.Internal
         {
             Bridge.Call("setLocalResources", resourcesJson);
         }
+
+        internal static void SetPlatformWrapper(string wrapper, string version)
+        {
+            Bridge.Call("setPlatformWrapper", wrapper, version);
+        }
+
+        internal static string GetIntegrationAttributes()
+        {
+            return Bridge.Call<string>("getIntegrationAttributes");
+        }
+
+        internal static void RefreshCustomerInfo(string callbackId)
+        {
+            Bridge.Call("refreshCustomerInfo", callbackId);
+        }
+
+        internal static string GetEventTrackingBehavior()
+        {
+            return Bridge.Call<string>("getEventTrackingBehavior");
+        }
+
+        internal static void SetEventTrackingBehavior(string behavior)
+        {
+            Bridge.Call("setEventTrackingBehavior", behavior);
+        }
+
+        internal static string GetAdConsent()
+        {
+            return Bridge.Call<string>("getAdConsent");
+        }
+
+        internal static void SetAdConsent(string adConsentJson)
+        {
+            Bridge.Call("setAdConsent", adConsentJson);
+        }
+
+        internal static void SetInterfaceStyle(string style)
+        {
+            Bridge.Call("setInterfaceStyle", style);
+        }
+
+        internal static void CancelAllScheduledNotifications()
+        {
+            Bridge.Call("cancelAllScheduledNotifications");
+        }
+
+        internal static void SetPushToken(string token)
+        {
+            Bridge.Call("setPushToken", token);
+        }
+
+        internal static void SetNotificationsEnabled(bool enabled)
+        {
+            Bridge.Call("setNotificationsEnabled", enabled);
+        }
+
+        internal static void HandleNotificationOpen(string dataJson)
+        {
+            Bridge.Call("handleNotificationOpen", dataJson);
+        }
+
+        internal static void PresentCustomerCenter(string configurationJson, string presentationId, bool hasDelegate)
+        {
+            Bridge.Call("presentCustomerCenter", configurationJson, presentationId, hasDelegate);
+        }
+
+        internal static void DismissCustomerCenter(string callbackId)
+        {
+            Bridge.Call("dismissCustomerCenter", callbackId);
+        }
+
+        internal static void RespondToCustomerCenterShouldRestore(string callbackId, bool proceed)
+        {
+            Bridge.Call("respondToCustomerCenterShouldRestore", callbackId, proceed);
+        }
+
+        internal static void ShowEmbeddedPaywall(string viewId, string placement, string paramsJson, float x, float y, float width, float height)
+        {
+            // An empty string stands for "none": a null argument leaves Unity guessing the Java method's signature.
+            Bridge.Call("showEmbeddedPaywall", viewId, placement, paramsJson ?? "", x, y, width, height);
+        }
+
+        internal static void SetEmbeddedPaywallRect(string viewId, float x, float y, float width, float height)
+        {
+            Bridge.Call("setEmbeddedPaywallRect", viewId, x, y, width, height);
+        }
+
+        internal static void RemoveEmbeddedPaywall(string viewId)
+        {
+            Bridge.Call("removeEmbeddedPaywall", viewId);
+        }
+
+        internal static void DismissWithCompletion(string callbackId)
+        {
+            Bridge.Call("dismissWithCompletion", callbackId ?? "");
+        }
+
+        internal static void DismissForNextPaywall(string callbackId)
+        {
+            Bridge.Call("dismissForNextPaywall", callbackId ?? "");
+        }
+
+        internal static void OpenRestoreOnWeb()
+        {
+            Bridge.Call("openRestoreOnWeb");
+        }
+
+        internal static string GetExternalAccountId()
+        {
+            return Bridge.Call<string>("getExternalAccountId");
+        }
+
+        internal static void ObservePurchaseStart(string productId)
+        {
+            Bridge.Call("observePurchaseStart", productId);
+        }
+
+        internal static void ObservePurchaseError(string productId, string error)
+        {
+            Bridge.Call("observePurchaseError", productId, error);
+        }
+
+        internal static void ObservePurchaseResult(int billingResponseCode, string debugMessage, string purchasesJson)
+        {
+            Bridge.Call("observePurchaseResult", billingResponseCode, debugMessage, purchasesJson);
+        }
+
+        internal static void DispatchGameControllerKeyEvent(int keyCode, bool isPressed)
+        {
+            Bridge.Call("dispatchGameControllerKeyEvent", keyCode, isPressed);
+        }
+
+        internal static void DispatchGameControllerMotionEvent(float x, float y)
+        {
+            Bridge.Call("dispatchGameControllerMotionEvent", x, y);
+        }
+
+        internal static void Teardown()
+        {
+            Bridge.Call("teardown");
+        }
     }
 #endif
 }
