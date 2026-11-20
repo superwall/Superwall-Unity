@@ -2,6 +2,9 @@ package com.superwall.sdk.unity
 
 import android.app.Activity
 import android.net.Uri
+import android.view.View
+import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import com.unity3d.player.UnityPlayer
 import com.superwall.sdk.Superwall
 import com.superwall.sdk.config.options.SuperwallOptions
@@ -33,11 +36,13 @@ import com.superwall.sdk.paywall.presentation.get_presentation_result.getPresent
 import com.superwall.sdk.paywall.presentation.result.PresentationResult
 import com.superwall.sdk.analytics.superwall.SuperwallEvent
 import com.superwall.sdk.analytics.superwall.SuperwallEventInfo
+import java.lang.ref.WeakReference
 import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.WeakHashMap
 import com.superwall.sdk.models.internal.RedemptionResult
 import com.superwall.sdk.store.abstractions.product.StoreProduct
 import com.superwall.sdk.store.abstractions.product.StoreProductType
@@ -50,6 +55,87 @@ import kotlin.time.Duration.Companion.seconds
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
+
+/**
+ * Keeps an in-window paywall fully visible while its container slides into place.
+ *
+ * Unity renders into a SurfaceView behind the Activity's window, and the window tells the
+ * compositor which part of itself is see-through so the game shows there. Android works that
+ * region out during a layout pass, from each view's position including its translation. The
+ * SDK's in-window host starts a Fullscreen paywall 5% of the screen height lower (and a Push
+ * paywall a full screen to the right) and animates it into place by translation, which is not a
+ * layout pass. On devices that honour the region (seen on Samsung with Android 10 to 13) the strip
+ * the paywall slid over therefore kept showing the game, until something like a rotation forced
+ * a new layout.
+ *
+ * So after each layout pass this watches the content view's children, and asks for another
+ * layout whenever one of them has moved by translation since.
+ */
+internal class InWindowPaywallRelayout private constructor(content: ViewGroup) :
+    ViewTreeObserver.OnGlobalLayoutListener {
+    companion object {
+        private const val POLL_MS = 50L
+        // Long enough to outlast the SDK's 300 ms enter and exit animations.
+        private const val MAX_POLLS = 40
+
+        private var installed: InWindowPaywallRelayout? = null
+
+        /** Call on the UI thread. Watches [activity]'s window once; later calls for it do nothing. */
+        fun install(activity: Activity) {
+            val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return
+            if (installed?.content?.get() === content) return
+            installed?.uninstall()
+            installed = InWindowPaywallRelayout(content).also {
+                content.viewTreeObserver.addOnGlobalLayoutListener(it)
+            }
+        }
+    }
+
+    private val content = WeakReference(content)
+    // Each translated child's offset at the last layout pass, which is what the region was built from.
+    private val laidOutAt = WeakHashMap<View, Pair<Float, Float>>()
+    private var pollsLeft = 0
+    private var polling = false
+    private val poll = Runnable { poll() }
+
+    override fun onGlobalLayout() {
+        val content = content.get() ?: return
+        laidOutAt.clear()
+        for (i in 0 until content.childCount) {
+            val child = content.getChildAt(i)
+            if (child.translationX != 0f || child.translationY != 0f) {
+                laidOutAt[child] = child.translationX to child.translationY
+            }
+        }
+        if (laidOutAt.isEmpty()) return
+        pollsLeft = MAX_POLLS
+        if (!polling) {
+            polling = true
+            content.postDelayed(poll, POLL_MS)
+        }
+    }
+
+    private fun poll() {
+        polling = false
+        val content = content.get() ?: return
+        val moved = laidOutAt.any { (child, at) ->
+            child.parent === content && (child.translationX != at.first || child.translationY != at.second)
+        }
+        if (moved) {
+            // Runs onGlobalLayout again, which records the new offsets and keeps polling.
+            content.requestLayout()
+        } else if (--pollsLeft > 0) {
+            polling = true
+            content.postDelayed(poll, POLL_MS)
+        }
+    }
+
+    private fun uninstall() {
+        val content = content.get() ?: return
+        content.removeCallbacks(poll)
+        if (content.viewTreeObserver.isAlive) content.viewTreeObserver.removeOnGlobalLayoutListener(this)
+    }
+}
 
 /**
  * Holds each paywall custom callback until C# replies. The paywall waits on [request], and
@@ -187,6 +273,10 @@ class SuperwallUnityBridge {
 
         customCallbacks.unityPausedWhilePresenting =
             options.paywalls.presentationHost == com.superwall.sdk.config.options.PaywallOptions.PresentationHost.ACTIVITY
+
+        if (!customCallbacks.unityPausedWhilePresenting) {
+            activity.runOnUiThread { InWindowPaywallRelayout.install(activity) }
+        }
 
         val unityActivityProvider = object : com.superwall.sdk.misc.ActivityProvider {
             override fun getCurrentActivity(): Activity? = UnityPlayer.currentActivity
