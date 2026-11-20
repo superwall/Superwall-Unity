@@ -4,7 +4,7 @@ All notable changes to this package will be documented in this file.
 ## [Unreleased]
 
 ### Fixes
-* Android: on some devices (reported on Samsung phones and tablets with Android 10 to 13) a Fullscreen paywall presented in-window, the default, left a strip of the game showing along the top 5% of the screen and looked shifted down, until the device was rotated. A Push paywall could be affected the same way. The plugin now refreshes the window's layout as the paywall animates into place.
+* Android: on some devices (reproduced on a Galaxy S20 with Android 13, reported on Samsung tablets with Android 10 and 11) a Fullscreen paywall presented in-window, the default, left a strip of the game showing along the top 5% of the screen and looked shifted down, until the device was rotated. A Push paywall could be affected the same way. The plugin now refreshes the window's layout as the paywall animates into place.
 
 ## [0.6.0]
 

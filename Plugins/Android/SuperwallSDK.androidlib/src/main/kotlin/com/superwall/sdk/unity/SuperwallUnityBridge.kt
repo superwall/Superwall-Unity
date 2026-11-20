@@ -59,14 +59,14 @@ import org.json.JSONObject
 /**
  * Keeps an in-window paywall fully visible while its container slides into place.
  *
- * Unity renders into a SurfaceView behind the Activity's window, and the window tells the
- * compositor which part of itself is see-through so the game shows there. Android works that
- * region out during a layout pass, from each view's position including its translation. The
- * SDK's in-window host starts a Fullscreen paywall 5% of the screen height lower (and a Push
- * paywall a full screen to the right) and animates it into place by translation, which is not a
- * layout pass. On devices that honour the region (seen on Samsung with Android 10 to 13) the strip
- * the paywall slid over therefore kept showing the game, until something like a rotation forced
- * a new layout.
+ * Unity renders into a SurfaceView behind the Activity's window. The SDK's in-window host starts
+ * a Fullscreen paywall 5% of the screen height lower (and a Push paywall a full screen to the
+ * right) and animates it into place by translation. On some devices (reproduced on a Galaxy S20
+ * with Android 13, reported on Samsung tablets with Android 10 and 11) the strip the paywall slid
+ * over kept showing the game afterwards, hiding the top of the paywall until something like a
+ * rotation forced a new layout pass. The likely cause is that the part of the window the game
+ * shows through is worked out during layout, from each view's position including its
+ * translation, and a translation animation is not a layout pass.
  *
  * So after each layout pass this watches the content view's children, and asks for another
  * layout whenever one of them has moved by translation since.
