@@ -142,6 +142,72 @@ namespace Superwall.Internal
 
         [DllImport("__Internal")]
         internal static extern void _SuperwallBridge_SetLocalResources(string resourcesJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetPlatformWrapper(string wrapper, string version);
+
+        [DllImport("__Internal")]
+        internal static extern string _SuperwallBridge_GetIntegrationAttributes();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_RefreshCustomerInfo(string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern string _SuperwallBridge_GetEventTrackingBehavior();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetEventTrackingBehavior(string behavior);
+
+        [DllImport("__Internal")]
+        internal static extern string _SuperwallBridge_GetAdConsent();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetAdConsent(string adConsentJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetInterfaceStyle(string style);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_CancelAllScheduledNotifications();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetPushToken(string token);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetNotificationsEnabled(bool enabled);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_HandleNotificationOpen(string dataJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_PresentCustomerCenter(string configurationJson, string presentationId, bool hasDelegate);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_DismissCustomerCenter(string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_RespondToCustomerCenterShouldRestore(string callbackId, bool proceed);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_DismissWithCompletion(string callbackId);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_ShowEmbeddedPaywall(string viewId, string placement, string paramsJson, float x, float y, float width, float height);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetEmbeddedPaywallRect(string viewId, float x, float y, float width, float height);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_RemoveEmbeddedPaywall(string viewId);
+
+        [DllImport("__Internal")]
+        internal static extern string _SuperwallBridge_GetGrantedEntitlements();
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetGrantedEntitlements(string entitlementsJson);
+
+        [DllImport("__Internal")]
+        internal static extern void _SuperwallBridge_SetGameControllerForwardingEnabled(bool enabled);
     }
 #endif
 }

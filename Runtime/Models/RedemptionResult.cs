@@ -131,6 +131,8 @@ namespace Superwall
         public PurchaserInfo PurchaserInfo;
         public RedemptionPaywallInfo PaywallInfo;
         public List<Entitlement> Entitlements;
+        /// <summary>iOS only. The user attributes the redemption set.</summary>
+        public Dictionary<string, object> UserAttributes;
     }
 
     [Serializable]
@@ -270,6 +272,8 @@ namespace Superwall
         public Dictionary<string, object> PlacementParams;
         public string VariantId;
         public string ExperimentId;
+        /// <summary>The identifier of the product bought.</summary>
+        public string ProductIdentifier;
     }
 
     [Serializable]

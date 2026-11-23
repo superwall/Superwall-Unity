@@ -508,7 +508,10 @@ namespace Superwall.Editor.Tests
 
             Assert.AreEqual(NetworkEnvironment.Release, options.NetworkEnvironment);
             Assert.AreEqual(TestModeBehavior.Automatic, options.TestModeBehavior);
+#pragma warning disable CS0618 // The deprecated option keeps its default.
             Assert.IsTrue(options.IsExternalDataCollectionEnabled);
+#pragma warning restore CS0618
+            Assert.IsNull(options.EventTrackingBehavior);
             Assert.IsFalse(options.IsGameControllerEnabled);
             Assert.IsFalse(options.ShouldObservePurchases);
             Assert.AreEqual(6, options.MaxConfigRetryCount);

@@ -8,7 +8,11 @@ namespace Superwall
     {
         public string Id;
         public EntitlementType Type;
-        public bool IsActive;
+        /// <summary>
+        /// Whether the entitlement is active. A new <c>Entitlement</c> is active, as in the native SDKs, so one built
+        /// for <c>SubscriptionStatus.CreateActive</c> is sent without setting this.
+        /// </summary>
+        public bool IsActive = true;
         public List<string> ProductIds;
         public string LatestProductId;
         public ProductStore? Store;
@@ -19,6 +23,12 @@ namespace Superwall
         public bool? WillRenew;
         public LatestSubscriptionState? State;
         public LatestSubscriptionOfferType? OfferType;
+        /// <summary>Whether the latest transaction was refunded or revoked. Null when unknown.</summary>
+        public bool? IsRevoked;
+        /// <summary>When the subscription renews, in epoch milliseconds, if it will. Null when it won't or isn't known.</summary>
+        public long? RenewsAt;
+        /// <summary>Whether the subscription is in its billing grace period. Null when unknown.</summary>
+        public bool? IsInGracePeriod;
     }
 
     [Serializable]

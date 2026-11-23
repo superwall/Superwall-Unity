@@ -1,5 +1,8 @@
 import Foundation
+import GameController
 import SuperwallKit
+import UIKit
+import UserNotifications
 
 // UnitySendMessage is a C function provided by the Unity runtime at link time.
 @_silgen_name("UnitySendMessage")
@@ -86,6 +89,8 @@ private func parseLogScope(_ str: String) -> LogScope? {
     case "paywallviewcontroller": return .paywallViewController
     case "cache": return .cache
     case "webentitlements": return .webEntitlements
+    case "grantedentitlements": return .grantedEntitlements
+    case "customercenter": return .customerCenter
     case "all": return .all
     default: return nil
     }
@@ -115,7 +120,41 @@ private func parseIntegrationAttribute(_ str: String) -> IntegrationAttribute? {
     case "posthogUserId": return .posthogUserId
     case "customerioId": return .customerioId
     case "appstackId": return .appstackId
+    case "singularDeviceId": return .singularDeviceId
+    case "airbridgeId": return .airbridgeId
     default: return nil
+    }
+}
+
+private func parseEventTrackingBehavior(_ str: String?) -> EventTrackingBehavior? {
+    switch str {
+    case "all": return .all
+    case "superwallOnly": return .superwallOnly
+    case "none": return EventTrackingBehavior.none
+    default: return nil
+    }
+}
+
+private func serializeEventTrackingBehavior(_ behavior: EventTrackingBehavior) -> String {
+    switch behavior {
+    case .all: return "all"
+    case .superwallOnly: return "superwallOnly"
+    case .none: return "none"
+    @unknown default: return "all"
+    }
+}
+
+private func parseAdConsent(_ dict: [String: Any]) -> AdConsent {
+    func status(_ key: String) -> AdConsentStatus {
+        return dict[key] as? String == "denied" ? .denied : .granted
+    }
+    return AdConsent(adUserData: status("adUserData"), adPersonalization: status("adPersonalization"))
+}
+
+private func serializeAdConsentStatus(_ status: AdConsentStatus) -> String {
+    switch status {
+    case .denied: return "denied"
+    default: return "granted"
     }
 }
 
@@ -165,6 +204,22 @@ private func epochMilliseconds(_ date: Date) -> Int64 {
     return Int64((date.timeIntervalSince1970 * 1000).rounded())
 }
 
+// `ProductStore` and `EntitlementType` are `@objc` Int enums, which `String(describing:)` prints as
+// the type name, not the case, so C# could never parse `Entitlement.Store`. Name the cases here, in
+// the vocabulary the Android bridge uses.
+private func serializeProductStore(_ store: ProductStore) -> String {
+    switch store {
+    case .appStore: return "appStore"
+    case .stripe: return "stripe"
+    case .paddle: return "paddle"
+    case .playStore: return "playStore"
+    case .superwall: return "superwall"
+    case .custom: return "custom"
+    case .other: return "other"
+    @unknown default: return "other"
+    }
+}
+
 // Mirrors every field of the C# `Entitlement` model (see Runtime/Models/Entitlement.cs), which
 // `BridgeCallbackHandler.DeserializeEntitlement` already reads. Enum values are emitted as their
 // case names, which the C# side parses case-insensitively (`playStore` -> `ProductStore.PlayStore`,
@@ -174,7 +229,7 @@ private func epochMilliseconds(_ date: Date) -> Int64 {
 private func serializeEntitlement(_ entitlement: Entitlement) -> [String: Any] {
     var dict: [String: Any] = [
         "id": entitlement.id,
-        "type": String(describing: entitlement.type),
+        "type": "serviceLevel",
         "isActive": entitlement.isActive,
         "productIds": Array(entitlement.productIds)
     ]
@@ -182,7 +237,7 @@ private func serializeEntitlement(_ entitlement: Entitlement) -> [String: Any] {
         dict["latestProductId"] = latestProductId
     }
     if let store = entitlement.store {
-        dict["store"] = String(describing: store)
+        dict["store"] = serializeProductStore(store)
     }
     if let startsAt = entitlement.startsAt {
         dict["startsAt"] = epochMilliseconds(startsAt)
@@ -205,6 +260,15 @@ private func serializeEntitlement(_ entitlement: Entitlement) -> [String: Any] {
     if let offerType = entitlement.offerType {
         dict["offerType"] = offerType.rawValue
     }
+    if let isRevoked = entitlement.isRevoked {
+        dict["isRevoked"] = isRevoked
+    }
+    if let renewsAt = entitlement.renewsAt {
+        dict["renewsAt"] = epochMilliseconds(renewsAt)
+    }
+    if let isInGracePeriod = entitlement.isInGracePeriod {
+        dict["isInGracePeriod"] = isInGracePeriod
+    }
     return dict
 }
 
@@ -218,14 +282,7 @@ private func serializePaywallInfo(_ info: PaywallInfo) -> [String: Any] {
         "name": info.name,
         "url": info.url.absoluteString,
         "productIds": info.productIds,
-        "products": info.products.map { product -> [String: Any] in
-            var p: [String: Any] = [
-                "id": product.id,
-                "entitlements": product.entitlements.map { serializeEntitlement($0) }
-            ]
-            if let name = product.name { p["name"] = name }
-            return p
-        },
+        "products": info.products.map { serializeProduct($0) },
         "presentedBy": info.presentedBy,
         "isFreeTrialAvailable": info.isFreeTrialAvailable,
         "featureGatingBehavior": info.featureGatingBehavior == .gated ? "gated" : "nonGated",
@@ -233,8 +290,17 @@ private func serializePaywallInfo(_ info: PaywallInfo) -> [String: Any] {
         "state": info.state,
         "localNotifications": info.localNotifications.map { serializeLocalNotification($0) },
         "computedPropertyRequests": info.computedPropertyRequests.map { serializeComputedPropertyRequest($0) },
-        "surveys": info.surveys.map { serializeSurvey($0) }
+        "surveys": info.surveys.map { serializeSurvey($0) },
+        "cacheKey": info.cacheKey,
+        "buildId": info.buildId,
+        "isScrollEnabled": info.isScrollEnabled,
+        "isLocal": info.isLocal,
+        "presentation": serializePresentation(info.presentation),
+        "introOfferEligibility": serializeIntroOfferEligibility(info.introOfferEligibility)
     ]
+    if let s = info.shimmerLoadStartTime { dict["shimmerLoadStartTime"] = s }
+    if let s = info.shimmerLoadCompleteTime { dict["shimmerLoadCompleteTime"] = s }
+    if let id = info.presentationId { dict["presentationId"] = id }
     if let name = info.presentedByPlacementWithName { dict["presentedByPlacementWithName"] = name }
     if let id = info.presentedByPlacementWithId { dict["presentedByPlacementWithId"] = id }
     if let at = info.presentedByPlacementAt { dict["presentedByPlacementAt"] = at }
@@ -256,6 +322,199 @@ private func serializePaywallInfo(_ info: PaywallInfo) -> [String: Any] {
         dict["experiment"] = serializeExperiment(experiment)
     }
     return dict
+}
+
+// `id` and `productIdentifier` are both the bare product identifier here; Android's `id` is its composite one.
+private func serializeProduct(_ product: Product) -> [String: Any] {
+    var dict: [String: Any] = [
+        "id": product.id,
+        "productIdentifier": product.id,
+        "entitlements": product.entitlements.map { serializeEntitlement($0) }
+    ]
+    if let name = product.name { dict["name"] = name }
+    switch product.type {
+    case .appStore(let appStoreProduct):
+        dict["store"] = "appStore"
+        var details: [String: Any] = ["id": appStoreProduct.id]
+        if let billingPlanType = appStoreProduct.billingPlanType {
+            details["billingPlanType"] = serializeBillingPlanType(billingPlanType)
+        }
+        dict["appStoreProduct"] = details
+    case .stripe(let stripeProduct):
+        dict["store"] = "stripe"
+        var details: [String: Any] = ["id": stripeProduct.id]
+        if let trialDays = stripeProduct.trialDays { details["trialDays"] = trialDays }
+        dict["stripeProduct"] = details
+    case .paddle(let paddleProduct):
+        dict["store"] = "paddle"
+        dict["paddleProduct"] = ["id": paddleProduct.id]
+    case .custom(let customProduct):
+        dict["store"] = "custom"
+        dict["customProduct"] = ["id": customProduct.id]
+    }
+    return dict
+}
+
+private func serializeBillingPlanType(_ type: AppStoreProduct.BillingPlanType) -> String {
+    switch type {
+    case .upFront: return "upFront"
+    case .monthly: return "monthly"
+    @unknown default: return "upFront"
+    }
+}
+
+private func serializePresentation(_ presentation: PaywallPresentationInfo) -> [String: Any] {
+    var dict: [String: Any] = ["delay": presentation.delay]
+    switch presentation.style {
+    case .modal: dict["style"] = "modal"
+    case .fullscreen: dict["style"] = "fullscreen"
+    case .fullscreenNoAnimation: dict["style"] = "fullscreenNoAnimation"
+    case .push: dict["style"] = "push"
+    case .popup(let height, let width, let cornerRadius):
+        dict["style"] = "popup"
+        dict["height"] = height
+        dict["width"] = width
+        dict["cornerRadius"] = cornerRadius
+    case .drawer(let height, let cornerRadius):
+        dict["style"] = "drawer"
+        dict["height"] = height
+        dict["cornerRadius"] = cornerRadius
+    case .none: dict["style"] = "none"
+    @unknown default: dict["style"] = "none"
+    }
+    return dict
+}
+
+private func serializeIntroOfferEligibility(_ eligibility: IntroOfferEligibility) -> String {
+    switch eligibility {
+    case .eligible: return "eligible"
+    case .ineligible: return "ineligible"
+    case .automatic: return "automatic"
+    @unknown default: return "automatic"
+    }
+}
+
+private func serializeSubscriptionPeriodUnit(_ unit: SubscriptionPeriod.Unit) -> String {
+    switch unit {
+    case .day: return "day"
+    case .week: return "week"
+    case .month: return "month"
+    case .year: return "year"
+    @unknown default: return "day"
+    }
+}
+
+private func serializeSubscriptionPeriod(_ period: SubscriptionPeriod) -> [String: Any] {
+    return ["value": period.value, "unit": serializeSubscriptionPeriodUnit(period.unit)]
+}
+
+private func serializeDiscount(_ discount: StoreProductDiscount) -> [String: Any] {
+    var dict: [String: Any] = [
+        "price": NSDecimalNumber(decimal: discount.price).doubleValue,
+        "localizedPriceString": discount.localizedPriceString,
+        "subscriptionPeriod": serializeSubscriptionPeriod(discount.subscriptionPeriod),
+        "numberOfPeriods": discount.numberOfPeriods
+    ]
+    if let offerIdentifier = discount.offerIdentifier { dict["offerIdentifier"] = offerIdentifier }
+    if let currencyCode = discount.currencyCode { dict["currencyCode"] = currencyCode }
+    switch discount.paymentMode {
+    case .payAsYouGo: dict["paymentMode"] = "payAsYouGo"
+    case .payUpFront: dict["paymentMode"] = "payUpFront"
+    case .freeTrial: dict["paymentMode"] = "freeTrial"
+    @unknown default: dict["paymentMode"] = "payAsYouGo"
+    }
+    switch discount.type {
+    case .introductory: dict["type"] = "introductory"
+    case .promotional: dict["type"] = "promotional"
+    @unknown default: dict["type"] = "introductory"
+    }
+    return dict
+}
+
+// The provider and confidence go out under SuperwallKit's raw values (`mmp`, `apple_search_ads`, `high`).
+private func serializeAttributionMatchInfo(_ info: AttributionMatchInfo) -> [String: Any] {
+    var dict: [String: Any] = [
+        "provider": info.provider.rawValue,
+        "matched": info.matched
+    ]
+    if let source = info.source { dict["source"] = source }
+    if let confidence = info.confidence { dict["confidence"] = confidence.rawValue }
+    if let matchScore = info.matchScore { dict["matchScore"] = matchScore }
+    if let reason = info.reason { dict["reason"] = reason }
+    return dict
+}
+
+private func serializePageViewData(_ data: PageViewData) -> [String: Any] {
+    var dict: [String: Any] = [
+        "pageNodeId": data.pageNodeId,
+        "flowPosition": data.flowPosition,
+        "pageName": data.pageName,
+        "navigationNodeId": data.navigationNodeId,
+        "navigationType": data.navigationType
+    ]
+    if let previousPageNodeId = data.previousPageNodeId { dict["previousPageNodeId"] = previousPageNodeId }
+    if let previousFlowPosition = data.previousFlowPosition { dict["previousFlowPosition"] = previousFlowPosition }
+    if let timeOnPreviousPageMs = data.timeOnPreviousPageMs { dict["timeOnPreviousPageMs"] = timeOnPreviousPageMs }
+    return dict
+}
+
+private func serializeTransactionProduct(_ product: TransactionProduct) -> [String: Any] {
+    var dict: [String: Any] = [
+        "id": product.id,
+        "price": [
+            "raw": NSDecimalNumber(decimal: product.price.raw).doubleValue,
+            "localized": product.price.localized,
+            "daily": product.price.daily,
+            "weekly": product.price.weekly,
+            "monthly": product.price.monthly,
+            "yearly": product.price.yearly
+        ] as [String: Any],
+        "locale": product.locale
+    ]
+    if let trialPeriod = product.trialPeriod {
+        var trial: [String: Any] = [
+            "days": trialPeriod.days,
+            "weeks": trialPeriod.weeks,
+            "months": trialPeriod.months,
+            "years": trialPeriod.years,
+            "text": trialPeriod.text
+        ]
+        if let endAt = trialPeriod.endAt { trial["endAt"] = epochMilliseconds(endAt) }
+        dict["trialPeriod"] = trial
+    }
+    if let period = product.period {
+        dict["period"] = [
+            "alt": period.alt,
+            "ly": period.ly,
+            "unit": serializeSubscriptionPeriodUnit(period.unit),
+            "days": period.days,
+            "weeks": period.weeks,
+            "months": period.months,
+            "years": period.years
+        ] as [String: Any]
+    }
+    if let languageCode = product.languageCode { dict["languageCode"] = languageCode }
+    var currency: [String: Any] = [:]
+    if let code = product.currency.code { currency["code"] = code }
+    if let symbol = product.currency.symbol { currency["symbol"] = symbol }
+    dict["currency"] = currency
+    return dict
+}
+
+private func serializeStatusReason(_ reason: PaywallPresentationRequestStatusReason) -> [String: Any] {
+    switch reason {
+    case .debuggerPresented: return ["type": "debuggerPresented"]
+    case .paywallAlreadyPresented: return ["type": "paywallAlreadyPresented"]
+    case .holdout(let experiment):
+        return ["type": "holdout", "experiment": serializeExperiment(experiment) as Any]
+    case .noAudienceMatch: return ["type": "noAudienceMatch"]
+    case .placementNotFound: return ["type": "placementNotFound"]
+    case .noPaywallViewController: return ["type": "noPaywallViewController"]
+    case .noPresenter: return ["type": "noPresenter"]
+    case .noConfig: return ["type": "noConfig"]
+    case .subscriptionStatusTimeout: return ["type": "subscriptionStatusTimeout"]
+    @unknown default: return [:]
+    }
 }
 
 private func serializePaywallCloseReason(_ reason: PaywallCloseReason) -> String {
@@ -307,14 +566,19 @@ private func serializeSurvey(_ s: Survey) -> [String: Any] {
     }
     return [
         "id": s.id,
+        "assignmentKey": s.assignmentKey,
         "title": s.title,
         "message": s.message,
-        "options": s.options.map { ["id": $0.id, "text": $0.title] },
+        "options": s.options.map { serializeSurveyOption($0) },
         "presentationCondition": conditionStr,
         "presentationProbability": s.presentationProbability,
         "includeOtherOption": s.includeOtherOption,
         "includeCloseOption": s.includeCloseOption
     ]
+}
+
+private func serializeSurveyOption(_ option: SurveyOption) -> [String: Any] {
+    return ["id": option.id, "text": option.title]
 }
 
 private func serializeSubscriptionStatus(_ status: SubscriptionStatus) -> [String: Any] {
@@ -372,6 +636,19 @@ private func serializeStoreTransaction(_ transaction: StoreTransaction) -> [Stri
     if let revocationDate = transaction.revocationDate {
         dict["revocationDate"] = iso8601String(revocationDate)
     }
+    // The raw values are upper case ("PURCHASED"); C# parses either.
+    dict["state"] = transaction.state.rawValue.lowercased()
+    var payment: [String: Any] = [
+        "productIdentifier": transaction.payment.productIdentifier,
+        "quantity": transaction.payment.quantity
+    ]
+    if let discountIdentifier = transaction.payment.discountIdentifier {
+        payment["discountIdentifier"] = discountIdentifier
+    }
+    dict["payment"] = payment
+    if let appAccountToken = transaction.appAccountToken {
+        dict["appAccountToken"] = appAccountToken.uuidString
+    }
     return dict
 }
 
@@ -384,8 +661,108 @@ private func appendEventPayload(_ event: SuperwallEvent, to dict: inout [String:
     case .paywallOpen(let paywallInfo),
          .paywallClose(let paywallInfo),
          .paywallDecline(let paywallInfo),
-         .transactionTimeout(let paywallInfo):
+         .transactionTimeout(let paywallInfo),
+         .paywallWebviewLoadStart(let paywallInfo),
+         .paywallWebviewLoadFail(let paywallInfo),
+         .paywallWebviewLoadComplete(let paywallInfo),
+         .paywallWebviewLoadTimeout(let paywallInfo),
+         .paywallWebviewLoadFallback(let paywallInfo),
+         .paywallWebviewProcessTerminated(let paywallInfo),
+         .stripeCheckoutStart(let paywallInfo),
+         .stripeCheckoutSubmit(let paywallInfo),
+         .stripeCheckoutComplete(let paywallInfo),
+         .stripeCheckoutFail(let paywallInfo),
+         .teleportOpen(let paywallInfo):
         dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .paywallPageView(let paywallInfo, let data):
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+        dict["pageViewData"] = serializePageViewData(data)
+
+    case .attributionMatch(let info):
+        dict["attributionMatchInfo"] = serializeAttributionMatchInfo(info)
+
+    case .teleportReturn(let paywallInfo):
+        if let paywallInfo = paywallInfo {
+            dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+        }
+
+    case .deviceAttributes(let attributes):
+        dict["deviceAttributes"] = attributes
+
+    case .userAttributes(let attributes):
+        dict["userAttributes"] = attributes
+
+    case .integrationAttributes(let attributes):
+        dict["integrationAttributes"] = attributes
+
+    case .deepLink(let url):
+        dict["deepLinkUrl"] = url.absoluteString
+
+    case .triggerFire(let placementName, let result):
+        dict["placementName"] = placementName
+        dict["result"] = serializeTriggerResult(result)
+
+    case .restoreFail(let message):
+        dict["message"] = message
+
+    case .paywallResponseLoadStart(let triggeredPlacementName),
+         .paywallResponseLoadNotFound(let triggeredPlacementName),
+         .paywallResponseLoadFail(let triggeredPlacementName),
+         .paywallProductsLoadComplete(let triggeredPlacementName):
+        if let name = triggeredPlacementName { dict["triggeredPlacementName"] = name }
+
+    case .paywallResponseLoadComplete(let triggeredPlacementName, let paywallInfo),
+         .paywallProductsLoadStart(let triggeredPlacementName, let paywallInfo),
+         .paywallProductsLoadFail(let triggeredPlacementName, let paywallInfo):
+        if let name = triggeredPlacementName { dict["triggeredPlacementName"] = name }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .paywallProductsLoadRetry(let triggeredPlacementName, let paywallInfo, let attempt):
+        if let name = triggeredPlacementName { dict["triggeredPlacementName"] = name }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+        dict["attempt"] = attempt
+
+    case .paywallProductsLoadMissingProducts(let triggeredPlacementName, let paywallInfo, let identifiers):
+        if let name = triggeredPlacementName { dict["triggeredPlacementName"] = name }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+        dict["missingProductIdentifiers"] = Array(identifiers)
+
+    case .paywallPresentationRequest(let status, let reason):
+        switch status {
+        case .presentation: dict["status"] = "presentation"
+        case .noPresentation: dict["status"] = "noPresentation"
+        case .timeout: dict["status"] = "timeout"
+        @unknown default: break
+        }
+        if let reason = reason {
+            dict["statusReason"] = serializeStatusReason(reason)
+        }
+
+    case .surveyResponse(let survey, let selectedOption, let customResponse, let paywallInfo):
+        dict["survey"] = serializeSurvey(survey)
+        dict["selectedOption"] = serializeSurveyOption(selectedOption)
+        if let customResponse = customResponse { dict["customResponse"] = customResponse }
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .customPlacement(let name, let params, let paywallInfo):
+        dict["name"] = name
+        dict["placementParams"] = params
+        dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .adServicesTokenRequestFail(let error):
+        dict["error"] = error.localizedDescription
+
+    case .adServicesTokenRequestComplete(let token):
+        dict["token"] = token
+
+    case .enrichmentComplete(let userEnrichment, let deviceEnrichment):
+        if let userEnrichment = userEnrichment { dict["userEnrichment"] = userEnrichment }
+        if let deviceEnrichment = deviceEnrichment { dict["deviceEnrichment"] = deviceEnrichment }
+
+    case .reviewRequested(let count):
+        dict["reviewRequestedCount"] = count
+        dict["reviewCount"] = count
 
     case .transactionStart(let product, let paywallInfo),
          .transactionAbandon(let product, let paywallInfo),
@@ -394,9 +771,15 @@ private func appendEventPayload(_ event: SuperwallEvent, to dict: inout [String:
         dict["product"] = serializeStoreProduct(product)
         dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
 
-    case .transactionComplete(let transaction, let product, _, let paywallInfo):
+    case .transactionComplete(let transaction, let product, let type, let paywallInfo):
         if let transaction = transaction {
             dict["transaction"] = serializeStoreTransaction(transaction)
+        }
+        switch type {
+        case .nonRecurringProductPurchase: dict["transactionType"] = "nonRecurringProductPurchase"
+        case .freeTrialStart: dict["transactionType"] = "freeTrialStart"
+        case .subscriptionStart: dict["transactionType"] = "subscriptionStart"
+        @unknown default: break
         }
         dict["product"] = serializeStoreProduct(product)
         dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
@@ -420,10 +803,61 @@ private func appendEventPayload(_ event: SuperwallEvent, to dict: inout [String:
     case .nonRecurringProductPurchase(let product, let paywallInfo):
         // `TransactionProduct` is a slimmer type than `StoreProduct`; the identifier is what it shares.
         dict["product"] = ["productIdentifier": product.id]
+        dict["transactionProduct"] = serializeTransactionProduct(product)
         dict["paywallInfo"] = serializePaywallInfo(paywallInfo)
+
+    case .permissionRequested(let permissionName, let paywallIdentifier),
+         .permissionGranted(let permissionName, let paywallIdentifier),
+         .permissionDenied(let permissionName, let paywallIdentifier):
+        dict["permissionName"] = permissionName
+        dict["paywallIdentifier"] = paywallIdentifier
+
+    case .paywallPreloadStart(let paywallCount),
+         .paywallPreloadComplete(let paywallCount):
+        dict["paywallCount"] = paywallCount
+
+    case .customerCenterOpen(let screen, let presentation):
+        switch screen {
+        case .management: dict["customerCenterScreen"] = "management"
+        case .noPurchases: dict["customerCenterScreen"] = "noPurchases"
+        }
+        dict["customerCenterPresentationStyle"] = presentation == .embedded ? "embedded" : "sheet"
+
+    case .customerCenterAction(let action, let pathId, let productId):
+        dict["customerCenterAction"] = serializeCustomerCenterAction(action)
+        dict["customerCenterPathId"] = pathId
+        if let productId = productId { dict["customerCenterProductId"] = productId }
+
+    case .customerCenterSurveyResponse(let surveyId, let optionId, let action, let pathId, let productId):
+        dict["customerCenterSurveyId"] = surveyId
+        dict["customerCenterSurveyOptionId"] = optionId
+        dict["customerCenterAction"] = serializeCustomerCenterAction(action)
+        dict["customerCenterPathId"] = pathId
+        if let productId = productId { dict["customerCenterProductId"] = productId }
+
+    case .customerCenterRefundRequest(let productId, let status):
+        dict["customerCenterProductId"] = productId
+        dict["customerCenterRefundStatus"] = serializeCustomerCenterRefundStatus(status)
 
     default:
         break
+    }
+}
+
+private func serializeTriggerResult(_ result: TriggerResult) -> [String: Any] {
+    switch result {
+    case .placementNotFound:
+        return ["type": "placementNotFound"]
+    case .noAudienceMatch:
+        return ["type": "noAudienceMatch"]
+    case .paywall(let experiment):
+        return ["type": "paywall", "experiment": serializeExperiment(experiment) as Any]
+    case .holdout(let experiment):
+        return ["type": "holdout", "experiment": serializeExperiment(experiment) as Any]
+    case .error(let error):
+        return ["type": "error", "error": error.localizedDescription]
+    @unknown default:
+        return ["type": "error"]
     }
 }
 
@@ -447,10 +881,49 @@ private func serializeEventInfo(_ info: SuperwallEventInfo) -> [String: Any] {
     return dict
 }
 
+// Dates are epoch milliseconds, as for entitlements. Optional values are omitted rather than sent as null.
 private func serializeCustomerInfo(_ info: CustomerInfo) -> [String: Any] {
     return [
         "userId": info.userId,
-        "entitlements": info.entitlements.map { serializeEntitlement($0) }
+        "entitlements": info.entitlements.map { serializeEntitlement($0) },
+        "activeSubscriptionProductIds": Array(info.activeSubscriptionProductIds),
+        "subscriptions": info.subscriptions.map { serializeSubscriptionTransaction($0) },
+        "nonSubscriptions": info.nonSubscriptions.map { serializeNonSubscriptionTransaction($0) }
+    ]
+}
+
+private func serializeSubscriptionTransaction(_ transaction: SubscriptionTransaction) -> [String: Any] {
+    var dict: [String: Any] = [
+        "transactionId": transaction.transactionId,
+        "productId": transaction.productId,
+        "purchaseDate": epochMilliseconds(transaction.purchaseDate),
+        "willRenew": transaction.willRenew,
+        "isRevoked": transaction.isRevoked,
+        "isInGracePeriod": transaction.isInGracePeriod,
+        "isInBillingRetryPeriod": transaction.isInBillingRetryPeriod,
+        "isActive": transaction.isActive,
+        "store": serializeProductStore(transaction.store)
+    ]
+    if let expirationDate = transaction.expirationDate {
+        dict["expirationDate"] = epochMilliseconds(expirationDate)
+    }
+    if let offerType = transaction.offerType {
+        dict["offerType"] = offerType.rawValue
+    }
+    if let subscriptionGroupId = transaction.subscriptionGroupId {
+        dict["subscriptionGroupId"] = subscriptionGroupId
+    }
+    return dict
+}
+
+private func serializeNonSubscriptionTransaction(_ transaction: NonSubscriptionTransaction) -> [String: Any] {
+    return [
+        "transactionId": transaction.transactionId,
+        "productId": transaction.productId,
+        "purchaseDate": epochMilliseconds(transaction.purchaseDate),
+        "isConsumable": transaction.isConsumable,
+        "isRevoked": transaction.isRevoked,
+        "store": serializeProductStore(transaction.store)
     ]
 }
 
@@ -471,10 +944,50 @@ private func serializeRedemptionResult(_ result: RedemptionResult) -> [String: A
     }
 }
 
+// Same shape as the Android bridge: `type` tells the ownership and store identifier cases apart.
 private func serializeRedemptionInfo(_ info: RedemptionResult.RedemptionInfo) -> [String: Any] {
-    return [
+    var dict: [String: Any] = [
         "entitlements": serializeEntitlements(info.entitlements)
     ]
+    switch info.ownership {
+    case .appUser(let appUserId):
+        dict["ownership"] = ["type": "appUser", "appUserId": appUserId]
+    case .device(let deviceId):
+        dict["ownership"] = ["type": "device", "deviceId": deviceId]
+    }
+
+    var purchaserInfo: [String: Any] = ["appUserId": info.purchaserInfo.appUserId]
+    if let email = info.purchaserInfo.email {
+        purchaserInfo["email"] = email
+    }
+    switch info.purchaserInfo.storeIdentifiers {
+    case .stripe(let customerId, let subscriptionIds):
+        purchaserInfo["storeIdentifiers"] = ["type": "stripe", "customerId": customerId, "subscriptionIds": subscriptionIds] as [String: Any]
+    case .paddle(let customerId, let subscriptionIds):
+        purchaserInfo["storeIdentifiers"] = ["type": "paddle", "customerId": customerId, "subscriptionIds": subscriptionIds] as [String: Any]
+    case .unknown(let store, let additionalInfo):
+        purchaserInfo["storeIdentifiers"] = ["type": "unknown", "store": store, "additionalInfo": additionalInfo] as [String: Any]
+    }
+    dict["purchaserInfo"] = purchaserInfo
+
+    if let paywallInfo = info.paywallInfo {
+        var paywall: [String: Any] = [
+            "identifier": paywallInfo.identifier,
+            "placementName": paywallInfo.placementName,
+            "placementParams": paywallInfo.placementParams,
+            "variantId": paywallInfo.variantId,
+            "experimentId": paywallInfo.experimentId
+        ]
+        // `productIdentifier` is deprecated in favour of `product.identifier`.
+        if let productIdentifier = paywallInfo.product?.identifier {
+            paywall["productIdentifier"] = productIdentifier
+        }
+        dict["paywallInfo"] = paywall
+    }
+    if let userAttributes = info.userAttributes {
+        dict["userAttributes"] = userAttributes
+    }
+    return dict
 }
 
 // MARK: - Delegate
@@ -520,12 +1033,16 @@ private class SuperwallUnityDelegate: SuperwallDelegate {
     }
 
     func handleLog(level: String, scope: String, message: String?, info: [String: Any]?, error: Swift.Error?) {
-        sendToUnity(method: "handleLog", data: [
+        var data: [String: Any] = [
             "level": level,
             "scope": scope,
             "message": message as Any,
             "error": error?.localizedDescription as Any
-        ])
+        ]
+        if let info = info {
+            data["info"] = info
+        }
+        sendToUnity(method: "handleLog", data: data)
     }
 
     func willRedeemLink() {
@@ -692,14 +1209,217 @@ final class UnityCustomCallbacks {
     }
 }
 
+// MARK: - Customer Center
+
+// The configuration C# sends (Superwall.SerializeCustomerCenterConfiguration). A path whose type can't be built
+// here, such as a URL path whose URL doesn't parse, is left out.
+private func parseCustomerCenterConfiguration(_ dict: [String: Any]) -> CustomerCenterConfiguration {
+    let defaults = CustomerCenterConfiguration.default
+    let support = dict["support"] as? [String: Any] ?? [:]
+    var accent: CustomerCenterConfiguration.Appearance.ColorPair?
+    if let pair = dict["accent"] as? [String: Any], let light = pair["light"] as? String, let dark = pair["dark"] as? String {
+        accent = CustomerCenterConfiguration.Appearance.ColorPair(light: light, dark: dark)
+    }
+    return CustomerCenterConfiguration(
+        managementScreen: (dict["managementScreen"] as? [String: Any]).map(parseCustomerCenterScreen) ?? defaults.managementScreen,
+        noPurchasesScreen: (dict["noPurchasesScreen"] as? [String: Any]).map(parseCustomerCenterScreen) ?? defaults.noPurchasesScreen,
+        support: CustomerCenterConfiguration.Support(
+            email: support["email"] as? String,
+            latestAppVersion: support["latestAppVersion"] as? String,
+            warnsAboutUpdates: support["warnsAboutUpdates"] as? Bool ?? true,
+            checksAppStoreForUpdates: support["checksAppStoreForUpdates"] as? Bool ?? true,
+            webManagementURL: (support["webManagementUrl"] as? String).flatMap { URL(string: $0) }
+        ),
+        appearance: CustomerCenterConfiguration.Appearance(accent: accent),
+        showsAccountDetails: dict["showsAccountDetails"] as? Bool ?? true,
+        warnsAboutDuplicateSubscriptions: dict["warnsAboutDuplicateSubscriptions"] as? Bool ?? true
+    )
+}
+
+private func parseCustomerCenterScreen(_ dict: [String: Any]) -> CustomerCenterConfiguration.Screen {
+    let paths = (dict["paths"] as? [[String: Any]] ?? []).compactMap { path -> CustomerCenterConfiguration.Path? in
+        guard let type = parseCustomerCenterPathType(path) else { return nil }
+        var survey: CustomerCenterConfiguration.FeedbackSurvey?
+        if let surveyDict = path["survey"] as? [String: Any], let surveyId = surveyDict["id"] as? String {
+            let options = (surveyDict["options"] as? [[String: Any]] ?? []).compactMap { option -> CustomerCenterConfiguration.FeedbackSurvey.Option? in
+                guard let id = option["id"] as? String else { return nil }
+                return CustomerCenterConfiguration.FeedbackSurvey.Option(id: id, title: option["title"] as? String)
+            }
+            survey = CustomerCenterConfiguration.FeedbackSurvey(id: surveyId, title: surveyDict["title"] as? String, options: options)
+        }
+        return CustomerCenterConfiguration.Path(id: path["id"] as? String, type: type, title: path["title"] as? String, survey: survey)
+    }
+    return CustomerCenterConfiguration.Screen(title: dict["title"] as? String, subtitle: dict["subtitle"] as? String, paths: paths)
+}
+
+private func parseCustomerCenterPathType(_ dict: [String: Any]) -> CustomerCenterConfiguration.PathType? {
+    switch dict["type"] as? String {
+    case "restore": return .restore
+    case "manageSubscription": return .manageSubscription
+    // C# sends milliseconds, as Android takes them; SuperwallKit takes seconds.
+    case "refund": return .refund(window: (dict["windowMillis"] as? Double).map { $0 / 1000 })
+    case "changePlan": return .changePlan(productIds: dict["productIds"] as? [String])
+    case "contactSupport": return .contactSupport
+    case "url":
+        guard let string = dict["url"] as? String, let url = URL(string: string) else { return nil }
+        return .url(url, openMethod: dict["openMethod"] as? String == "external" ? .external : .inApp)
+    case "custom":
+        guard let identifier = dict["identifier"] as? String else { return nil }
+        return .custom(identifier: identifier)
+    default: return nil
+    }
+}
+
+private func serializeCustomerCenterAction(_ action: CustomerCenterAction) -> [String: Any] {
+    switch action {
+    case .restore: return ["type": "restore"]
+    case .manageSubscription: return ["type": "manageSubscription"]
+    case .refund: return ["type": "refund"]
+    case .changePlan: return ["type": "changePlan"]
+    case .contactSupport: return ["type": "contactSupport"]
+    case .url(let url): return ["type": "url", "url": url.absoluteString]
+    case .custom(let identifier): return ["type": "custom", "identifier": identifier]
+    }
+}
+
+private func serializeCustomerCenterRefundStatus(_ status: CustomerCenterRefundStatus) -> String {
+    switch status {
+    case .success: return "success"
+    case .userCancelled: return "userCancelled"
+    default: return "error"
+    }
+}
+
+private func serializeCustomerCenterPurchase(_ purchase: CustomerCenterPurchase) -> [String: Any] {
+    var dict: [String: Any] = [
+        "store": serializeProductStore(purchase.store),
+        "entitlements": serializeEntitlements(purchase.entitlements)
+    ]
+    if let productId = purchase.productId { dict["productId"] = productId }
+    if let subscription = purchase.subscription { dict["subscription"] = serializeSubscriptionTransaction(subscription) }
+    if let nonSubscription = purchase.nonSubscription { dict["nonSubscription"] = serializeNonSubscriptionTransaction(nonSubscription) }
+    return dict
+}
+
+/// Holds each Customer Center restore until C# answers ShouldRestorePurchases. The restore waits on `request`, and
+/// C# answers through `respond` with the same callbackId.
+final class UnityCustomerCenterRestores {
+    private var pending: [String: CheckedContinuation<Bool, Never>] = [:]
+    private let lock = NSLock()
+    private let send: (String, [String: Any]) -> Bool
+
+    init(send: @escaping (String, [String: Any]) -> Bool) {
+        self.send = send
+    }
+
+    @MainActor
+    func request(presentationId: String) async -> Bool {
+        let callbackId = UUID().uuidString
+        return await withCheckedContinuation { continuation in
+            lock.lock()
+            pending[callbackId] = continuation
+            lock.unlock()
+            let sent = send("customerCenterShouldRestorePurchases", [
+                "presentationId": presentationId,
+                "callbackId": callbackId
+            ])
+            // C# never got the question, so restore, as SuperwallKit does without a delegate.
+            if !sent {
+                respond(callbackId: callbackId, proceed: true)
+            }
+        }
+    }
+
+    func respond(callbackId: String, proceed: Bool) {
+        lock.lock()
+        let continuation = pending.removeValue(forKey: callbackId)
+        lock.unlock()
+        continuation?.resume(returning: proceed)
+    }
+}
+
+/// Forwards one presentation's Customer Center events to C#, tagged with the id C# registered its delegate under.
+@MainActor
+private final class UnityCustomerCenterDelegate: CustomerCenterDelegate {
+    let presentationId: String
+
+    init(presentationId: String) {
+        self.presentationId = presentationId
+    }
+
+    func customerCenterShouldRestorePurchases() async -> Bool {
+        return await unityCustomerCenterRestores.request(presentationId: presentationId)
+    }
+
+    func customerCenterDidSelectAction(_ action: CustomerCenterAction, pathId: String, purchase: CustomerCenterPurchase?) {
+        var data: [String: Any] = [
+            "presentationId": presentationId,
+            "action": serializeCustomerCenterAction(action),
+            "pathId": pathId
+        ]
+        if let purchase = purchase { data["purchase"] = serializeCustomerCenterPurchase(purchase) }
+        sendToUnity(method: "customerCenterDidSelectAction", data: data)
+    }
+
+    func customerCenterDidCompleteSurvey(surveyId: String, optionId: String, action: CustomerCenterAction, pathId: String) {
+        sendToUnity(method: "customerCenterDidCompleteSurvey", data: [
+            "presentationId": presentationId,
+            "surveyId": surveyId,
+            "optionId": optionId,
+            "action": serializeCustomerCenterAction(action),
+            "pathId": pathId
+        ])
+    }
+
+    func customerCenterDidCompleteRefundRequest(productId: String, status: CustomerCenterRefundStatus) {
+        sendToUnity(method: "customerCenterDidCompleteRefundRequest", data: [
+            "presentationId": presentationId,
+            "productId": productId,
+            "status": serializeCustomerCenterRefundStatus(status)
+        ])
+    }
+
+    func customerCenterDidDismiss() {
+        sendToUnity(method: "customerCenterDidDismiss", data: ["presentationId": presentationId])
+    }
+}
+
+/// The Customer Center on screen in any window, if there is one.
+@MainActor
+private func presentedCustomerCenter() -> CustomerCenterViewController? {
+    let windows = UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap { $0.windows }
+    for window in windows {
+        var controller = window.rootViewController
+        while let current = controller {
+            if let customerCenter = current as? CustomerCenterViewController {
+                return customerCenter
+            }
+            controller = current.presentedViewController
+        }
+    }
+    return nil
+}
+
 // MARK: - Stored State
 
 private var unityDelegate: SuperwallUnityDelegate?
 private var unityPurchaseController: UnityPurchaseController?
 let unityCustomCallbacks = UnityCustomCallbacks { method, data in sendToUnity(method: method, data: data) }
+let unityCustomerCenterRestores = UnityCustomerCenterRestores { method, data in sendToUnity(method: method, data: data) }
 private var pendingFeatureHandlers: [String: () -> Void] = [:]
 private var pendingLocalResources: [String: URL] = [:]
 private var didConfigure = false
+
+/// What C#'s Configure completion is told once SuperwallKit calls its own: a failure only when the configuration
+/// couldn't be fetched. `pending` isn't one, as SuperwallKit may still be retrying.
+func configureCompletionResponse(status: ConfigurationStatus) -> [String: Any] {
+    if status == .failed {
+        return ["success": false, "error": "Superwall couldn't fetch its configuration."]
+    }
+    return ["success": true]
+}
 
 // MARK: - Extern C Functions
 
@@ -730,6 +1450,25 @@ public func _SuperwallBridge_Configure(
         if let externalData = dict["isExternalDataCollectionEnabled"] as? Bool {
             options?.isExternalDataCollectionEnabled = externalData
         }
+        // After the deprecated flag above, which it replaces.
+        if let behavior = parseEventTrackingBehavior(dict["eventTrackingBehavior"] as? String) {
+            options?.eventTrackingBehavior = behavior
+        }
+        // Only when C# set one: assigning marks consent as given by the app, which outranks a TCF banner.
+        if let adConsent = dict["adConsent"] as? [String: Any] {
+            options?.adConsent = parseAdConsent(adConsent)
+        }
+        switch dict["storeKitVersion"] as? String {
+        case "storeKit1": options?.storeKitVersion = .storeKit1
+        case "storeKit2": options?.storeKitVersion = .storeKit2
+        default: break
+        }
+        if let experimental = dict["enableExperimentalDeviceVariables"] as? Bool {
+            options?.enableExperimentalDeviceVariables = experimental
+        }
+        if let customerCenter = dict["customerCenter"] as? [String: Any] {
+            options?.customerCenter = parseCustomerCenterConfiguration(customerCenter)
+        }
         if let gameController = dict["isGameControllerEnabled"] as? Bool {
             options?.isGameControllerEnabled = gameController
         }
@@ -748,7 +1487,25 @@ public func _SuperwallBridge_Configure(
             case "release": options?.networkEnvironment = .release
             case "developer": options?.networkEnvironment = .developer
             case "releasecandidate": options?.networkEnvironment = .releaseCandidate
+            case "local": options?.networkEnvironment = .local
+            case "custom":
+                // SuperwallKit takes one domain or URL; `baseHost` is what an app that only set the Android fields has.
+                let custom = dict["customNetworkEnvironment"] as? [String: Any]
+                if let domain = (custom?["domain"] as? String) ?? (custom?["baseHost"] as? String) {
+                    options?.networkEnvironment = .custom(domain)
+                }
             default: break
+            }
+        }
+        if let devServer = dict["devServer"] as? [String: Any] {
+            if let address = devServer["url"] as? String {
+                if let url = URL(string: address) {
+                    options?.devServer = .url(url)
+                } else {
+                    NSLog("[SuperwallUnityBridge] Ignoring DevServer.Url, which isn't a URL: %@", address)
+                }
+            } else {
+                options?.devServer = .default
             }
         }
         // logging
@@ -816,8 +1573,16 @@ public func _SuperwallBridge_Configure(
             if let overrides = paywalls["overrideProductsByName"] as? [String: String] {
                 options?.paywalls.overrideProductsByName = overrides
             }
+            if let denied = paywalls["notificationPermissionsDenied"] as? [String: Any] {
+                let alert = PaywallOptions.NotificationPermissionsDenied()
+                if let title = denied["title"] as? String { alert.title = title }
+                if let message = denied["message"] as? String { alert.message = message }
+                if let action = denied["actionButtonTitle"] as? String { alert.actionButtonTitle = action }
+                if let close = denied["closeButtonTitle"] as? String { alert.closeButtonTitle = close }
+                options?.paywalls.notificationPermissionsDenied = alert
+            }
         }
-        // Note: passIdentifiersToPlayStore is Android-only, skipped on iOS.
+        // Note: passIdentifiersToPlayStore and paywalls.optimisticLoading are Android-only, skipped on iOS.
         // Note: useMockReviews is not available in SuperwallKit for iOS, skipped.
     }
 
@@ -838,7 +1603,14 @@ public func _SuperwallBridge_Configure(
 
     let completion: (() -> Void)? = callbackId.map { cbId in
         return {
-            sendAsyncResponse(callbackId: cbId, data: ["success": true])
+            // SuperwallKit calls this whether or not it got its configuration, and sets `configurationStatus`
+            // from the main queue. Read the status after what is already queued there, so a failure is seen.
+            DispatchQueue.main.async {
+                sendAsyncResponse(
+                    callbackId: cbId,
+                    data: configureCompletionResponse(status: Superwall.shared.configurationStatus)
+                )
+            }
         }
     }
 
@@ -893,7 +1665,9 @@ public func _SuperwallBridge_GetIsInitialized() -> Bool {
 public func _SuperwallBridge_SetUserAttributes(_ attributesJson: UnsafePointer<CChar>) {
     let json = String(cString: attributesJson)
     if let dict = parseJson(json) {
-        Superwall.shared.setUserAttributes(dict)
+        // JSON null arrives as NSNull, which SuperwallKit would store. nil is what removes an attribute.
+        let attributes: [String: Any?] = dict.mapValues { value -> Any? in value is NSNull ? nil : value }
+        Superwall.shared.setUserAttributes(attributes)
     }
 }
 
@@ -981,7 +1755,8 @@ public func _SuperwallBridge_GetEntitlements() -> UnsafePointer<CChar>? {
     let active = serializeEntitlements(entitlements.active)
     let inactive = serializeEntitlements(entitlements.inactive)
     let all = serializeEntitlements(entitlements.all)
-    let dict: [String: Any] = ["active": active, "inactive": inactive, "all": all]
+    let web = serializeEntitlements(entitlements.web)
+    let dict: [String: Any] = ["active": active, "inactive": inactive, "all": all, "web": web]
     return toCString(toJsonString(dict))
 }
 
@@ -1107,27 +1882,19 @@ public func _SuperwallBridge_RegisterPlacement(
                 "paywallInfo": serializePaywallInfo(info)
             ])
         }
-        handler?.onDismiss { info, result in
-            var data: [String: Any] = [
+        handler?.onWillDismiss { info, result in
+            sendToUnity(method: "onWillDismiss", data: [
                 "handlerId": hId!,
-                "paywallInfo": serializePaywallInfo(info)
-            ]
-            switch result {
-            // `PaywallResult.purchased` carries a `StoreProduct`, not a `String` — the old binding name
-            // was misleading. Passing the object straight into the payload meant JSON serialization
-            // received a non-JSON leaf and fell back to its debug description, so Unity was handed
-            // "<SWKStoreProduct: 0x14f80a980>" as `productId`. Any consumer matching that against a store
-            // catalogue (revenue reporting, receipt lookup) finds nothing and silently drops the purchase.
-            case .purchased(let product):
-                data["result"] = ["type": "purchased", "productId": product.productIdentifier]
-            case .declined:
-                data["result"] = ["type": "declined"]
-            case .restored:
-                data["result"] = ["type": "restored"]
-            @unknown default:
-                data["result"] = ["type": "declined"]
-            }
-            sendToUnity(method: "onDismiss", data: data)
+                "paywallInfo": serializePaywallInfo(info),
+                "result": serializePaywallResult(result)
+            ])
+        }
+        handler?.onDismiss { info, result in
+            sendToUnity(method: "onDismiss", data: [
+                "handlerId": hId!,
+                "paywallInfo": serializePaywallInfo(info),
+                "result": serializePaywallResult(result)
+            ])
         }
         handler?.onError { error in
             sendToUnity(method: "onError", data: [
@@ -1136,17 +1903,16 @@ public func _SuperwallBridge_RegisterPlacement(
             ])
         }
         handler?.onSkip { reason in
-            let reasonStr: String
+            var data: [String: Any] = ["handlerId": hId!]
             switch reason {
-            case .holdout: reasonStr = "holdout"
-            case .noAudienceMatch: reasonStr = "noAudienceMatch"
-            case .placementNotFound: reasonStr = "placementNotFound"
-            @unknown default: reasonStr = "noAudienceMatch"
+            case .holdout(let experiment):
+                data["reason"] = "holdout"
+                data["experiment"] = serializeExperiment(experiment)
+            case .noAudienceMatch: data["reason"] = "noAudienceMatch"
+            case .placementNotFound: data["reason"] = "placementNotFound"
+            @unknown default: data["reason"] = "noAudienceMatch"
             }
-            sendToUnity(method: "onSkip", data: [
-                "handlerId": hId!,
-                "reason": reasonStr
-            ])
+            sendToUnity(method: "onSkip", data: data)
         }
         handler?.onCustomCallback { callback in
             await unityCustomCallbacks.request(handlerId: hId!, callback: callback)
@@ -1170,9 +1936,82 @@ public func _SuperwallBridge_RegisterPlacement(
     }
 }
 
+func serializePaywallResult(_ result: PaywallResult) -> [String: Any] {
+    switch result {
+    // `PaywallResult.purchased` carries a `StoreProduct`, not a `String` — the old binding name
+    // was misleading. Passing the object straight into the payload meant JSON serialization
+    // received a non-JSON leaf and fell back to its debug description, so Unity was handed
+    // "<SWKStoreProduct: 0x14f80a980>" as `productId`. Any consumer matching that against a store
+    // catalogue (revenue reporting, receipt lookup) finds nothing and silently drops the purchase.
+    case .purchased(let product):
+        return ["type": "purchased", "productId": product.productIdentifier]
+    case .declined:
+        return ["type": "declined"]
+    case .restored:
+        return ["type": "restored"]
+    @unknown default:
+        return ["type": "declined"]
+    }
+}
+
+/// Runs one dismissal of a paywall at a time. SuperwallKit keeps one dismiss completion per paywall view controller:
+/// dismissing one that is already closing replaces the completion of the dismissal under way, which then never
+/// finishes. So a dismissal of the paywall a running one is closing waits for that one instead of starting another.
+/// A nil paywall (nothing presented) dismisses straight away.
+@MainActor
+final class UnityDismissals {
+    private final class Run {
+        let paywall: AnyObject?
+        var completions: [() -> Void]
+
+        init(paywall: AnyObject?, completion: @escaping () -> Void) {
+            self.paywall = paywall
+            self.completions = [completion]
+        }
+    }
+
+    private var running: Run?
+
+    func dismiss(_ paywall: AnyObject?, start: @escaping @MainActor () async -> Void, completion: @escaping () -> Void) {
+        if let paywall = paywall, let running = running, running.paywall === paywall {
+            running.completions.append(completion)
+            return
+        }
+        let run = Run(paywall: paywall, completion: completion)
+        if paywall != nil { running = run }
+        Task { @MainActor in
+            await start()
+            if self.running === run { self.running = nil }
+            run.completions.forEach { $0() }
+        }
+    }
+}
+
+@MainActor private let unityDismissals = UnityDismissals()
+
+private func dismissPresentedPaywall(completion: @escaping () -> Void) {
+    Task { @MainActor in
+        guard Superwall.isInitialized else {
+            completion()
+            return
+        }
+        unityDismissals.dismiss(
+            Superwall.shared.presentedViewController,
+            start: { await Superwall.shared.dismiss() },
+            completion: completion
+        )
+    }
+}
+
 @_cdecl("_SuperwallBridge_Dismiss")
 public func _SuperwallBridge_Dismiss() {
-    Superwall.shared.dismiss()
+    dismissPresentedPaywall {}
+}
+
+@_cdecl("_SuperwallBridge_DismissWithCompletion")
+public func _SuperwallBridge_DismissWithCompletion(_ callbackId: UnsafePointer<CChar>?) {
+    let cbId = toSwiftString(callbackId)
+    dismissPresentedPaywall { if let cbId = cbId { sendAsyncResponse(callbackId: cbId, data: [:]) } }
 }
 
 @_cdecl("_SuperwallBridge_GetPresentationResult")
@@ -1358,6 +2197,8 @@ private func serializeStoreProduct(_ product: StoreProduct) -> [String: Any] {
         "locale": product.locale,
         "isFamilyShareable": product.isFamilyShareable,
         "price": NSDecimalNumber(decimal: product.price).doubleValue,
+        // iOS has no base plans or offers, so the full identifier is the product identifier.
+        "fullIdentifier": product.productIdentifier,
         "attributes": product.attributes,
         "entitlements": product.entitlements.map { serializeEntitlement($0) }
     ]
@@ -1379,6 +2220,20 @@ private func serializeStoreProduct(_ product: StoreProduct) -> [String: Any] {
     if let endDate = product.trialPeriodEndDate {
         dict["trialPeriodEndDate"] = ISO8601DateFormatter().string(from: endDate)
     }
+    if let customTransactionId = product.customTransactionId {
+        dict["customTransactionId"] = customTransactionId
+    }
+    if let subscriptionPeriod = product.subscriptionPeriod {
+        dict["subscriptionPeriod"] = serializeSubscriptionPeriod(subscriptionPeriod)
+    }
+    if let introductoryDiscount = product.introductoryDiscount {
+        dict["introductoryDiscount"] = serializeDiscount(introductoryDiscount)
+    }
+    dict["discounts"] = product.discounts.map { serializeDiscount($0) }
+    if let billingPlanType = product.billingPlanType {
+        dict["billingPlanType"] = serializeBillingPlanType(billingPlanType)
+    }
+    dict["isBillingPlanAvailable"] = product.isBillingPlanAvailable
     return dict
 }
 
@@ -1476,9 +2331,9 @@ public func _SuperwallBridge_ShowAlert(_ alertJson: UnsafePointer<CChar>?) {
 }
 
 @_cdecl("_SuperwallBridge_SetLocalResources")
-public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CChar>) {
-    let json = String(cString: resourcesJson)
-    guard let dict = parseJson(json) else {
+public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CChar>?) {
+    // C# passes null to clear the resources.
+    guard let dict = parseJson(toSwiftString(resourcesJson)) else {
         pendingLocalResources = [:]
         return
     }
@@ -1498,5 +2353,498 @@ public func _SuperwallBridge_SetLocalResources(_ resourcesJson: UnsafePointer<CC
     pendingLocalResources = resources
     if didConfigure {
         NSLog("[SuperwallUnityBridge] SetLocalResources called after Configure — on iOS, local resources must be set before Configure or they will not be picked up.")
+    }
+}
+
+@_cdecl("_SuperwallBridge_SetPlatformWrapper")
+public func _SuperwallBridge_SetPlatformWrapper(_ wrapper: UnsafePointer<CChar>, _ version: UnsafePointer<CChar>) {
+    guard Superwall.isInitialized else { return }
+    Superwall.shared.setPlatformWrapper(String(cString: wrapper), version: String(cString: version))
+}
+
+@_cdecl("_SuperwallBridge_GetIntegrationAttributes")
+public func _SuperwallBridge_GetIntegrationAttributes() -> UnsafePointer<CChar>? {
+    return toCString(toJsonString(Superwall.shared.integrationAttributes))
+}
+
+@_cdecl("_SuperwallBridge_RefreshCustomerInfo")
+public func _SuperwallBridge_RefreshCustomerInfo(_ callbackId: UnsafePointer<CChar>) {
+    let cbId = String(cString: callbackId)
+    Task {
+        let info = await Superwall.shared.refreshCustomerInfo()
+        sendAsyncResponse(callbackId: cbId, data: serializeCustomerInfo(info))
+    }
+}
+
+@_cdecl("_SuperwallBridge_GetEventTrackingBehavior")
+public func _SuperwallBridge_GetEventTrackingBehavior() -> UnsafePointer<CChar>? {
+    return toCString(serializeEventTrackingBehavior(Superwall.shared.eventTrackingBehavior))
+}
+
+@_cdecl("_SuperwallBridge_SetEventTrackingBehavior")
+public func _SuperwallBridge_SetEventTrackingBehavior(_ behavior: UnsafePointer<CChar>) {
+    guard let parsed = parseEventTrackingBehavior(String(cString: behavior)) else { return }
+    Superwall.shared.eventTrackingBehavior = parsed
+}
+
+@_cdecl("_SuperwallBridge_GetAdConsent")
+public func _SuperwallBridge_GetAdConsent() -> UnsafePointer<CChar>? {
+    let consent = Superwall.shared.adConsent
+    return toCString(toJsonString([
+        "adUserData": serializeAdConsentStatus(consent.adUserData),
+        "adPersonalization": serializeAdConsentStatus(consent.adPersonalization)
+    ]))
+}
+
+@_cdecl("_SuperwallBridge_SetAdConsent")
+public func _SuperwallBridge_SetAdConsent(_ adConsentJson: UnsafePointer<CChar>) {
+    guard let dict = parseJson(String(cString: adConsentJson)) else { return }
+    Superwall.shared.adConsent = parseAdConsent(dict)
+}
+
+@_cdecl("_SuperwallBridge_SetInterfaceStyle")
+public func _SuperwallBridge_SetInterfaceStyle(_ style: UnsafePointer<CChar>?) {
+    // C# passes null to follow the system setting again.
+    switch toSwiftString(style) {
+    case "light": Superwall.shared.setInterfaceStyle(to: .light)
+    case "dark": Superwall.shared.setInterfaceStyle(to: .dark)
+    default: Superwall.shared.setInterfaceStyle(to: nil)
+    }
+}
+
+@_cdecl("_SuperwallBridge_CancelAllScheduledNotifications")
+public func _SuperwallBridge_CancelAllScheduledNotifications() {
+    // SuperwallKit's counterpart of Android's cancelAllScheduledNotifications().
+    UNUserNotificationCenter.current().removeAllPendingSuperwallNotificationRequests()
+}
+
+// Push notifications through Superwall are Android only (Firebase Cloud Messaging). These accept the
+// calls so the DllImport symbols resolve, and do nothing.
+@_cdecl("_SuperwallBridge_SetPushToken")
+public func _SuperwallBridge_SetPushToken(_ token: UnsafePointer<CChar>) {}
+
+@_cdecl("_SuperwallBridge_SetNotificationsEnabled")
+public func _SuperwallBridge_SetNotificationsEnabled(_ enabled: Bool) {}
+
+@_cdecl("_SuperwallBridge_HandleNotificationOpen")
+public func _SuperwallBridge_HandleNotificationOpen(_ dataJson: UnsafePointer<CChar>) {}
+
+@_cdecl("_SuperwallBridge_PresentCustomerCenter")
+public func _SuperwallBridge_PresentCustomerCenter(
+    _ configurationJson: UnsafePointer<CChar>?,
+    _ presentationId: UnsafePointer<CChar>,
+    _ hasDelegate: Bool
+) {
+    let json = toSwiftString(configurationJson)
+    let id = String(cString: presentationId)
+    let onDismiss: () -> Void = { sendToUnity(method: "customerCenterOnDismiss", data: ["presentationId": id]) }
+    Task { @MainActor in
+        guard Superwall.isInitialized else {
+            onDismiss()
+            return
+        }
+        let configuration = parseJson(json).map(parseCustomerCenterConfiguration)
+        let previouslyPresented = presentedCustomerCenter()
+        Superwall.shared.presentCustomerCenter(
+            configuration: configuration,
+            delegate: hasDelegate ? UnityCustomerCenterDelegate(presentationId: id) : nil,
+            onDismiss: onDismiss
+        )
+        // SuperwallKit only logs when it can't present (one is already presented, or there's nothing to present
+        // from) and then never calls onDismiss. Call it, so C# releases the delegate and runs its onDismiss, as
+        // Android does.
+        let presented = presentedCustomerCenter()
+        if presented == nil || presented === previouslyPresented {
+            onDismiss()
+        }
+    }
+}
+
+@_cdecl("_SuperwallBridge_DismissCustomerCenter")
+public func _SuperwallBridge_DismissCustomerCenter(_ callbackId: UnsafePointer<CChar>?) {
+    let cbId = toSwiftString(callbackId)
+    let completion: () -> Void = { if let cbId = cbId { sendAsyncResponse(callbackId: cbId, data: [:]) } }
+    Task { @MainActor in
+        // SuperwallKit returns without calling the completion when it isn't configured.
+        guard Superwall.isInitialized else {
+            completion()
+            return
+        }
+        Superwall.shared.dismissCustomerCenter(completion: completion)
+    }
+}
+
+@_cdecl("_SuperwallBridge_RespondToCustomerCenterShouldRestore")
+public func _SuperwallBridge_RespondToCustomerCenterShouldRestore(_ callbackId: UnsafePointer<CChar>, _ proceed: Bool) {
+    unityCustomerCenterRestores.respond(callbackId: String(cString: callbackId), proceed: proceed)
+}
+
+@_cdecl("_SuperwallBridge_GetGrantedEntitlements")
+public func _SuperwallBridge_GetGrantedEntitlements() -> UnsafePointer<CChar>? {
+    guard Superwall.isInitialized else { return toCString("[]") }
+    return toCString(toJsonString(serializeEntitlements(Superwall.shared.grantedEntitlements)))
+}
+
+@_cdecl("_SuperwallBridge_SetGrantedEntitlements")
+public func _SuperwallBridge_SetGrantedEntitlements(_ entitlementsJson: UnsafePointer<CChar>) {
+    guard Superwall.isInitialized,
+          let entitlements = parseJsonArray(String(cString: entitlementsJson)) as? [[String: Any]] else { return }
+    Superwall.shared.grantedEntitlements = parseEntitlementsFromJson(entitlements)
+}
+
+// MARK: - Game Controller
+
+/// Passes the input of every connected controller's extended gamepad to SuperwallKit, which hands it to the
+/// paywall. A gamepad has a single `valueChangedHandler`, so the one the game had set is kept and still called,
+/// and put back when forwarding stops. A handler the game sets after that replaces forwarding on that gamepad, and
+/// is left alone when forwarding stops. Only used on the main thread.
+final class UnityGameControllerForwarder {
+    /// The handler is read and written through KVC, which hands over the block object itself: reading it through the
+    /// Swift property gives a new closure each time, so it couldn't be told apart from one the game installed.
+    private static let handlerKey = "valueChangedHandler"
+
+    /// Whether a handler the forwarder installed still forwards. It is turned off when the gamepad is let go, so a
+    /// handler that is somehow still installed afterwards only calls the game's.
+    private final class Forwarding {
+        var isOn = true
+    }
+
+    private struct Attachment {
+        let gamepad: GCExtendedGamepad
+        let previous: GCExtendedGamepadValueChangedHandler?
+        let handler: AnyObject
+        let forwarding: Forwarding
+    }
+
+    private var observers: [NSObjectProtocol] = []
+    private var attached: [Attachment] = []
+    private let forward: (GCExtendedGamepad, GCControllerElement) -> Void
+
+    init(forward: @escaping (GCExtendedGamepad, GCControllerElement) -> Void) {
+        self.forward = forward
+    }
+
+    var attachedGamepadCount: Int { return attached.count }
+
+    func start() {
+        guard observers.isEmpty else { return }
+        GCController.controllers().forEach { attach($0) }
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] notification in
+            if let controller = notification.object as? GCController {
+                self?.attach(controller)
+            }
+        })
+        observers.append(center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] notification in
+            if let controller = notification.object as? GCController {
+                self?.detach(controller)
+            }
+        })
+    }
+
+    func stop() {
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers = []
+        attached.forEach { release($0) }
+        attached = []
+    }
+
+    func attach(_ controller: GCController) {
+        guard let gamepad = controller.extendedGamepad,
+              !attached.contains(where: { $0.gamepad === gamepad }) else { return }
+        let previous = gamepad.valueChangedHandler
+        let forward = self.forward
+        let forwarding = Forwarding()
+        let block: @convention(block) (GCExtendedGamepad, GCControllerElement) -> Void = { gamepad, element in
+            previous?(gamepad, element)
+            if forwarding.isOn {
+                forward(gamepad, element)
+            }
+        }
+        let handler = block as AnyObject
+        attached.append(Attachment(gamepad: gamepad, previous: previous, handler: handler, forwarding: forwarding))
+        gamepad.setValue(handler, forKey: Self.handlerKey)
+    }
+
+    func detach(_ controller: GCController) {
+        guard let gamepad = controller.extendedGamepad,
+              let index = attached.firstIndex(where: { $0.gamepad === gamepad }) else { return }
+        release(attached.remove(at: index))
+    }
+
+    /// Puts the game's earlier handler back, unless the game has since installed another one: that one is the
+    /// game's now and stays.
+    private func release(_ entry: Attachment) {
+        entry.forwarding.isOn = false
+        guard (entry.gamepad.value(forKey: Self.handlerKey) as AnyObject?) === entry.handler else { return }
+        entry.gamepad.valueChangedHandler = entry.previous
+    }
+}
+
+private let unityGameControllerForwarder = UnityGameControllerForwarder { gamepad, element in
+    if Superwall.isInitialized {
+        Superwall.shared.gamepadValueChanged(gamepad: gamepad, element: element)
+    }
+}
+
+@_cdecl("_SuperwallBridge_SetGameControllerForwardingEnabled")
+public func _SuperwallBridge_SetGameControllerForwardingEnabled(_ enabled: Bool) {
+    DispatchQueue.main.async {
+        if enabled {
+            unityGameControllerForwarder.start()
+        } else {
+            unityGameControllerForwarder.stop()
+        }
+    }
+}
+
+// MARK: - Embedded Paywall
+
+/// The frame of an embedded paywall in a container with these bounds, from a rectangle given as fractions of them.
+func embeddedPaywallFrame(normalizedRect: CGRect, in bounds: CGRect) -> CGRect {
+    return CGRect(
+        x: normalizedRect.minX * bounds.width,
+        y: normalizedRect.minY * bounds.height,
+        width: normalizedRect.width * bounds.width,
+        height: normalizedRect.height * bounds.height
+    )
+}
+
+/// What C# hears when an embedded paywall's placement shows no paywall.
+func embeddedPaywallSkipPayload(viewId: String, reason: PaywallSkippedReason) -> [String: Any] {
+    var data: [String: Any] = ["viewId": viewId]
+    switch reason {
+    case .holdout(let experiment):
+        data["reason"] = "holdout"
+        data["experiment"] = serializeExperiment(experiment)
+    case .noAudienceMatch: data["reason"] = "noAudienceMatch"
+    case .placementNotFound: data["reason"] = "placementNotFound"
+    @unknown default: data["reason"] = "noAudienceMatch"
+    }
+    return data
+}
+
+/// What C# hears when the user is done with an embedded paywall. `paywallInfo` is the paywall's, serialized.
+func embeddedPaywallFinishedPayload(
+    viewId: String,
+    paywallInfo: [String: Any],
+    result: PaywallResult,
+    shouldDismiss: Bool
+) -> [String: Any] {
+    return [
+        "viewId": viewId,
+        "paywallInfo": paywallInfo,
+        "result": serializePaywallResult(result),
+        "shouldDismiss": shouldDismiss
+    ]
+}
+
+/// Covers the game's view and lays the paywall out in the part of it C# asked for. The rectangle is in fractions of
+/// this view's size, because Unity's pixels needn't match UIKit's points, so it stays right through rotation.
+/// Touches outside the paywall go through to the game.
+final class UnityEmbeddedPaywallContainer: UIView {
+    var normalizedRect: CGRect = .zero {
+        didSet { setNeedsLayout() }
+    }
+
+    weak var paywallView: UIView?
+
+    private var paywallFrame: CGRect {
+        return embeddedPaywallFrame(normalizedRect: normalizedRect, in: bounds)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        paywallView?.frame = paywallFrame
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        return paywallFrame.contains(point)
+    }
+}
+
+/// One paywall shown inside the game's view, retrieved with SuperwallKit's `getPaywall`. It owns at most one
+/// PaywallViewController, as a child of the window's root view controller, and lets go of it when removed: a
+/// paywall view controller must never be shown in two places.
+@MainActor
+private final class UnityEmbeddedPaywall: PaywallViewControllerDelegate {
+    private let viewId: String
+    private let container = UnityEmbeddedPaywallContainer()
+    private var paywallViewController: PaywallViewController?
+    private var loadTask: Task<Void, Never>?
+    private var isRemoved = false
+
+    init(viewId: String, normalizedRect: CGRect) {
+        self.viewId = viewId
+        container.normalizedRect = normalizedRect
+        container.clipsToBounds = true
+        container.backgroundColor = .clear
+    }
+
+    func setNormalizedRect(_ rect: CGRect) {
+        container.normalizedRect = rect
+    }
+
+    func load(placement: String, params: [String: Any]?) {
+        let viewId = self.viewId
+        loadTask = Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            do {
+                let paywall = try await Superwall.shared.getPaywall(
+                    forPlacement: placement,
+                    params: params,
+                    delegate: self,
+                    onCustomCallback: { callback in
+                        return await unityCustomCallbacks.request(handlerId: viewId, callback: callback)
+                    }
+                )
+                guard !Task.isCancelled, !self.isRemoved else { return }
+                guard paywall.parent == nil,
+                      paywall.presentingViewController == nil,
+                      paywall.viewIfLoaded?.superview == nil else {
+                    self.reportError("The paywall is already shown elsewhere. Use a different placement for each embedded paywall.")
+                    return
+                }
+                guard self.attach(paywall) else {
+                    self.reportError("There is no view controller to show the embedded paywall in.")
+                    return
+                }
+                sendToUnity(method: "embeddedPaywallOnPresent", data: [
+                    "viewId": viewId,
+                    "paywallInfo": serializePaywallInfo(paywall.info)
+                ])
+            } catch let reason as PaywallSkippedReason {
+                guard !Task.isCancelled, !self.isRemoved else { return }
+                sendToUnity(
+                    method: "embeddedPaywallOnSkip",
+                    data: embeddedPaywallSkipPayload(viewId: viewId, reason: reason)
+                )
+            } catch is CancellationError {
+                // Removed while loading.
+            } catch {
+                guard !Task.isCancelled, !self.isRemoved else { return }
+                self.reportError(error.localizedDescription)
+            }
+        }
+    }
+
+    func remove() {
+        isRemoved = true
+        loadTask?.cancel()
+        loadTask = nil
+        detach()
+    }
+
+    private func reportError(_ message: String) {
+        sendToUnity(method: "embeddedPaywallOnError", data: ["viewId": viewId, "error": message])
+    }
+
+    private func attach(_ paywall: PaywallViewController) -> Bool {
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap { $0.windows }
+        let window = windows.first(where: { $0.isKeyWindow }) ?? windows.first
+        guard let parent = window?.rootViewController, let parentView = parent.view else { return false }
+
+        container.frame = parentView.bounds
+        container.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        parentView.addSubview(container)
+
+        parent.addChild(paywall)
+        let paywallView: UIView = paywall.view
+        paywallView.translatesAutoresizingMaskIntoConstraints = true
+        paywallView.autoresizingMask = []
+        container.addSubview(paywallView)
+        container.paywallView = paywallView
+        container.setNeedsLayout()
+        paywall.didMove(toParent: parent)
+        paywallViewController = paywall
+        return true
+    }
+
+    private func detach() {
+        if let paywall = paywallViewController {
+            paywall.willMove(toParent: nil)
+            paywall.view.removeFromSuperview()
+            paywall.removeFromParent()
+        }
+        paywallViewController = nil
+        container.removeFromSuperview()
+    }
+
+    // MARK: PaywallViewControllerDelegate
+
+    // Required of a delegate outside SuperwallKit: its default implementation isn't public. The paywall shows its
+    // own loading state, so there's nothing to pass on.
+    func paywall(_ paywall: PaywallViewController, loadingStateDidChange loadingState: PaywallLoadingState) {}
+
+    func paywall(_ paywall: PaywallViewController, didFinishWith result: PaywallResult, shouldDismiss: Bool) {
+        // A paywall this view has let go of may still report to it.
+        guard paywall === paywallViewController else { return }
+        let info = serializePaywallInfo(paywall.info)
+        if shouldDismiss {
+            unityEmbeddedPaywalls[viewId] = nil
+            remove()
+        }
+        sendToUnity(method: "embeddedPaywallOnFinished", data: embeddedPaywallFinishedPayload(
+            viewId: viewId,
+            paywallInfo: info,
+            result: result,
+            shouldDismiss: shouldDismiss
+        ))
+    }
+}
+
+@MainActor private var unityEmbeddedPaywalls: [String: UnityEmbeddedPaywall] = [:]
+
+// x, y, width and height are fractions of the screen, with y measured from the top.
+@_cdecl("_SuperwallBridge_ShowEmbeddedPaywall")
+public func _SuperwallBridge_ShowEmbeddedPaywall(
+    _ viewId: UnsafePointer<CChar>,
+    _ placement: UnsafePointer<CChar>,
+    _ paramsJson: UnsafePointer<CChar>?,
+    _ x: Float,
+    _ y: Float,
+    _ width: Float,
+    _ height: Float
+) {
+    let id = String(cString: viewId)
+    let placementName = String(cString: placement)
+    let params = toSwiftString(paramsJson).flatMap { parseJson($0) }
+    let rect = CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(width), height: CGFloat(height))
+    Task { @MainActor in
+        guard Superwall.isInitialized else {
+            sendToUnity(method: "embeddedPaywallOnError", data: [
+                "viewId": id,
+                "error": "Superwall must be configured before an embedded paywall is shown."
+            ])
+            return
+        }
+        let embedded = UnityEmbeddedPaywall(viewId: id, normalizedRect: rect)
+        unityEmbeddedPaywalls[id] = embedded
+        embedded.load(placement: placementName, params: params)
+    }
+}
+
+@_cdecl("_SuperwallBridge_SetEmbeddedPaywallRect")
+public func _SuperwallBridge_SetEmbeddedPaywallRect(
+    _ viewId: UnsafePointer<CChar>,
+    _ x: Float,
+    _ y: Float,
+    _ width: Float,
+    _ height: Float
+) {
+    let id = String(cString: viewId)
+    let rect = CGRect(x: CGFloat(x), y: CGFloat(y), width: CGFloat(width), height: CGFloat(height))
+    Task { @MainActor in
+        unityEmbeddedPaywalls[id]?.setNormalizedRect(rect)
+    }
+}
+
+@_cdecl("_SuperwallBridge_RemoveEmbeddedPaywall")
+public func _SuperwallBridge_RemoveEmbeddedPaywall(_ viewId: UnsafePointer<CChar>) {
+    let id = String(cString: viewId)
+    Task { @MainActor in
+        unityEmbeddedPaywalls.removeValue(forKey: id)?.remove()
     }
 }
